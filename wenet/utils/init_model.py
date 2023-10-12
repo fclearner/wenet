@@ -22,7 +22,12 @@ from wenet.transformer.cmvn import GlobalCMVN
 from wenet.transformer.ctc import CTC
 from wenet.transformer.decoder import BiTransformerDecoder, TransformerDecoder
 from wenet.transformer.encoder import ConformerEncoder, TransformerEncoder
+from wenet.branchformer.encoder import BranchformerEncoder
+from wenet.e_branchformer.encoder import EBranchformerEncoder
 from wenet.squeezeformer.encoder import SqueezeformerEncoder
+from wenet.efficient_conformer.encoder import EfficientConformerEncoder
+from wenet.paraformer.paraformer import Paraformer
+from wenet.cif.predictor import Predictor
 from wenet.utils.cmvn import load_cmvn
 
 
@@ -47,6 +52,22 @@ def init_model(configs):
                                    **configs['encoder_conf'])
     elif encoder_type == 'squeezeformer':
         encoder = SqueezeformerEncoder(input_dim,
+                                       global_cmvn=global_cmvn,
+                                       **configs['encoder_conf'])
+    elif encoder_type == 'efficientConformer':
+        encoder = EfficientConformerEncoder(input_dim,
+                                            global_cmvn=global_cmvn,
+                                            **configs['encoder_conf'],
+                                            **configs['encoder_conf']
+                                            ['efficient_conf']
+                                            if 'efficient_conf' in
+                                               configs['encoder_conf'] else {})
+    elif encoder_type == 'branchformer':
+        encoder = BranchformerEncoder(input_dim,
+                                      global_cmvn=global_cmvn,
+                                      **configs['encoder_conf'])
+    elif encoder_type == 'e_branchformer':
+        encoder = EBranchformerEncoder(input_dim,
                                        global_cmvn=global_cmvn,
                                        **configs['encoder_conf'])
     else:
@@ -93,10 +114,19 @@ def init_model(configs):
                            joint=joint,
                            ctc=ctc,
                            **configs['model_conf'])
+    elif 'paraformer' in configs:
+        predictor = Predictor(**configs['cif_predictor_conf'])
+        model = Paraformer(vocab_size=vocab_size,
+                           encoder=encoder,
+                           decoder=decoder,
+                           ctc=ctc,
+                           predictor=predictor,
+                           **configs['model_conf'])
     else:
         model = ASRModel(vocab_size=vocab_size,
                          encoder=encoder,
                          decoder=decoder,
                          ctc=ctc,
+                         lfmmi_dir=configs.get('lfmmi_dir', ''),
                          **configs['model_conf'])
     return model

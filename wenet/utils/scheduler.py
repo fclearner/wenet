@@ -22,8 +22,6 @@ import warnings
 import torch
 from torch.optim.lr_scheduler import _LRScheduler
 
-from typeguard import check_argument_types
-
 
 class WarmupLR(_LRScheduler):
     """The WarmupLR scheduler
@@ -48,7 +46,6 @@ class WarmupLR(_LRScheduler):
             warmup_steps: Union[int, float] = 25000,
             last_epoch: int = -1,
     ):
-        assert check_argument_types()
         self.warmup_steps = warmup_steps
 
         # __init__() must be invoked before setting field
@@ -112,7 +109,7 @@ class WarmupPolicy(_LRScheduler):
             warnings.warn(
                 "To get the last learning rate computed "
                 "by the scheduler, please use `get_last_lr()`.",
-                UserWarning
+                UserWarning, stacklevel=2
             )
 
         step = self.last_epoch
@@ -173,7 +170,7 @@ class SquareRootConstantPolicy(_LRScheduler):
             warnings.warn(
                 "To get the last learning rate computed "
                 "by the scheduler, please use `get_last_lr()`.",
-                UserWarning
+                UserWarning, stacklevel=2
             )
 
         step = self.last_epoch
@@ -255,7 +252,7 @@ class WarmupHoldPolicy(WarmupPolicy):
             warnings.warn(
                 "To get the last learning rate computed by the scheduler,"
                 " " "please use `get_last_lr()`.",
-                UserWarning
+                UserWarning, stacklevel=2
             )
 
         step = self.last_epoch
@@ -336,7 +333,7 @@ class WarmupAnnealHoldPolicy(_LRScheduler):
             warnings.warn(
                 "To get the last learning rate computed "
                 "by the scheduler, please use `get_last_lr()`.",
-                UserWarning
+                UserWarning, stacklevel=2
             )
 
         step = self.last_epoch
@@ -554,7 +551,7 @@ class NoamAnnealing(_LRScheduler):
             warnings.warn(
                 "To get the last learning rate computed "
                 "by the scheduler, please use `get_last_lr()`.",
-                UserWarning
+                UserWarning, stacklevel=2
             )
 
         step = max(1, self.last_epoch)

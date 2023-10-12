@@ -4,16 +4,11 @@
 
 import glob
 import os
-import platform
 import shutil
 import sys
 
 import setuptools
 from setuptools.command.build_ext import build_ext
-
-
-def is_windows():
-    return platform.system() == "Windows"
 
 
 def cmake_extension(name, *args, **kwargs) -> setuptools.Extension:
@@ -23,6 +18,7 @@ def cmake_extension(name, *args, **kwargs) -> setuptools.Extension:
 
 
 class BuildExtension(build_ext):
+
     def build_extension(self, ext: setuptools.extension.Extension):
         os.makedirs(self.build_temp, exist_ok=True)
         os.makedirs(self.build_lib, exist_ok=True)
@@ -46,7 +42,6 @@ class BuildExtension(build_ext):
             )
 
         libs = []
-        torch_lib = 'fc_base/libtorch-src/lib'
         for ext in ['so', 'pyd']:
             libs.extend(
                 glob.glob(f"{self.build_temp}/**/_wenet*.{ext}",
@@ -55,19 +50,6 @@ class BuildExtension(build_ext):
             libs.extend(
                 glob.glob(f"{self.build_temp}/**/*wenet_api.{ext}",
                           recursive=True))
-            libs.extend(glob.glob(f'{src_dir}/{torch_lib}/*c10.{ext}'))
-            libs.extend(glob.glob(f'{src_dir}/{torch_lib}/*torch_cpu.{ext}'))
-
-        if not is_windows():
-            fst_lib = 'fc_base/openfst-build/src/lib/.libs'
-            for ext in ['so', 'dylib']:
-                libs.extend(glob.glob(f'{src_dir}/{fst_lib}/libfst.{ext}'))
-        else:
-            libs.extend(glob.glob(f'{src_dir}/{torch_lib}/asmjit.dll'))
-            libs.extend(glob.glob(f'{src_dir}/{torch_lib}/fbgemm.dll'))
-            libs.extend(glob.glob(f'{src_dir}/{torch_lib}/uv.dll'))
-        libs.extend(glob.glob(f'{src_dir}/{torch_lib}/libgomp*'))  # linux
-        libs.extend(glob.glob(f'{src_dir}/{torch_lib}/libiomp5*'))  # macos/win
 
         for lib in libs:
             print(f"Copying {lib} to {self.build_lib}/")
@@ -80,17 +62,12 @@ def read_long_description():
     return readme
 
 
-package_name = "wenetruntime"
-
 setuptools.setup(
-    name=package_name,
-    version='1.0.8',
+    name="wenetruntime",
+    version='1.14.0',
     author="Binbin Zhang",
     author_email="binbzha@qq.com",
-    package_dir={
-        package_name: "py",
-    },
-    packages=[package_name],
+    packages=setuptools.find_packages(),
     url="https://github.com/wenet-e2e/wenet",
     long_description=read_long_description(),
     long_description_content_type="text/markdown",
@@ -98,12 +75,18 @@ setuptools.setup(
     cmdclass={"build_ext": BuildExtension},
     zip_safe=False,
     setup_requires=["tqdm"],
-    install_requires=["tqdm"],
+    install_requires=["torch>=1.10.0", "librosa", "tqdm"] if "ONNX=ON"
+    not in os.environ.get("WENET_CMAKE_ARGS", "") else ["librosa", "tqdm"],
+    entry_points={
+        "console_scripts": [
+            "wenetruntime = wenetruntime.main:main",
+        ]
+    },
     classifiers=[
         "Programming Language :: C++",
-        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Operating System :: OS Independent",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
     license="Apache licensed, as found in the LICENSE file",
-    python_requires=">=3.6",
 )

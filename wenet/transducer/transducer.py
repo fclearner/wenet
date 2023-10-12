@@ -1,10 +1,15 @@
 from typing import Dict, List, Optional, Tuple, Union
 
+try:
+    import k2
+except ImportError:
+    print('Warning: Failed to import k2 which is requried for k2 rnnt train')
+
 import torch
 import torchaudio
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
-from typeguard import check_argument_types
+
 from wenet.transducer.predictor import PredictorBase
 from wenet.transducer.search.greedy_search import basic_greedy_search
 from wenet.transducer.search.prefix_beam_search import PrefixBeamSearch
@@ -36,8 +41,12 @@ class Transducer(ASRModel):
         length_normalized_loss: bool = False,
         transducer_weight: float = 1.0,
         attention_weight: float = 0.0,
+        enable_k2: bool = False,
+        delay_penalty: float = 0.0,
+        warmup_steps: float = 25000,
+        lm_only_scale: float = 0.25,
+        am_only_scale: float = 0.0,
     ) -> None:
-        assert check_argument_types()
         assert attention_weight + ctc_weight + transducer_weight == 1.0
         super().__init__(vocab_size, encoder, attention_decoder, ctc,
                          ctc_weight, ignore_id, reverse_weight, lsm_weight,
@@ -50,6 +59,22 @@ class Transducer(ASRModel):
         self.predictor = predictor
         self.joint = joint
         self.bs = None
+
+        # k2 rnnt loss
+        self.enable_k2 = enable_k2
+        self.delay_penalty = delay_penalty
+        if delay_penalty != 0.0:
+            assert self.enable_k2 is True
+        self.lm_only_scale = lm_only_scale
+        self.am_only_scale = am_only_scale
+        self.warmup_steps = warmup_steps
+        self.simple_am_proj: Optional[nn.Linear] = None
+        self.simple_lm_proj: Optional[nn.Linear] = None
+        if self.enable_k2:
+            self.simple_am_proj = torch.nn.Linear(self.encoder.output_size(),
+                                                  vocab_size)
+            self.simple_lm_proj = torch.nn.Linear(self.predictor.output_size(),
+                                                  vocab_size)
 
         # Note(Mddct): decoder also means predictor in transducer,
         # but here decoder is attention decoder
@@ -68,6 +93,7 @@ class Transducer(ASRModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
+        steps: int = 0,
     ) -> Dict[str, Optional[torch.Tensor]]:
         """Frontend + Encoder + predictor + joint + loss
 
@@ -86,27 +112,16 @@ class Transducer(ASRModel):
         # Encoder
         encoder_out, encoder_mask = self.encoder(speech, speech_lengths)
         encoder_out_lens = encoder_mask.squeeze(1).sum(1)
-        # predictor
-        ys_in_pad = add_blank(text, self.blank, self.ignore_id)
-        predictor_out = self.predictor(ys_in_pad)
-        # joint
-        joint_out = self.joint(encoder_out, predictor_out)
-        # NOTE(Mddct): some loss implementation require pad valid is zero
-        # torch.int32 rnnt_loss required
-        rnnt_text = text.to(torch.int64)
-        rnnt_text = torch.where(rnnt_text == self.ignore_id, 0,
-                                rnnt_text).to(torch.int32)
-        rnnt_text_lengths = text_lengths.to(torch.int32)
-        encoder_out_lens = encoder_out_lens.to(torch.int32)
-        loss = torchaudio.functional.rnnt_loss(joint_out,
-                                               rnnt_text,
-                                               encoder_out_lens,
-                                               rnnt_text_lengths,
-                                               blank=self.blank,
-                                               reduction="mean")
-        loss_rnnt = loss
 
-        loss = self.transducer_weight * loss
+        # compute_loss
+        loss_rnnt = self._compute_loss(encoder_out,
+                                       encoder_out_lens,
+                                       encoder_mask,
+                                       text,
+                                       text_lengths,
+                                       steps=steps)
+
+        loss = self.transducer_weight * loss_rnnt
         # optional attention decoder
         loss_att: Optional[torch.Tensor] = None
         if self.attention_decoder_weight != 0.0 and self.decoder is not None:
@@ -451,3 +466,95 @@ class Transducer(ASRModel):
     @torch.jit.export
     def forward_predictor_init_state(self) -> List[torch.Tensor]:
         return self.predictor.init_state(1, device=torch.device("cpu"))
+
+    def _compute_loss(self,
+                      encoder_out: torch.Tensor,
+                      encoder_out_lens: torch.Tensor,
+                      encoder_mask: torch.Tensor,
+                      text: torch.Tensor,
+                      text_lengths: torch.Tensor,
+                      steps: int = 0) -> torch.Tensor:
+        ys_in_pad = add_blank(text, self.blank, self.ignore_id)
+        # predictor
+        predictor_out = self.predictor(ys_in_pad)
+        if self.simple_lm_proj is None and self.simple_am_proj is None:
+            # joint
+            joint_out = self.joint(encoder_out, predictor_out)
+            # NOTE(Mddct): some loss implementation require pad valid is zero
+            # torch.int32 rnnt_loss required
+            rnnt_text = text.to(torch.int64)
+            rnnt_text = torch.where(rnnt_text == self.ignore_id, 0,
+                                    rnnt_text).to(torch.int32)
+            rnnt_text_lengths = text_lengths.to(torch.int32)
+            encoder_out_lens = encoder_out_lens.to(torch.int32)
+            loss = torchaudio.functional.rnnt_loss(joint_out,
+                                                   rnnt_text,
+                                                   encoder_out_lens,
+                                                   rnnt_text_lengths,
+                                                   blank=self.blank,
+                                                   reduction="mean")
+        else:
+            delay_penalty = self.delay_penalty
+            if steps < 2 * self.warmup_steps:
+                delay_penalty = 0.00
+            ys_in_pad = ys_in_pad.type(torch.int64)
+            boundary = torch.zeros((encoder_out.size(0), 4),
+                                   dtype=torch.int64,
+                                   device=encoder_out.device)
+            boundary[:, 3] = encoder_mask.squeeze(1).sum(1)
+            boundary[:, 2] = text_lengths
+
+            rnnt_text = torch.where(text == self.ignore_id, 0, text)
+            lm = self.simple_lm_proj(predictor_out)
+            am = self.simple_am_proj(encoder_out)
+            with torch.cuda.amp.autocast(enabled=False):
+                simple_loss, (px_grad, py_grad) = k2.rnnt_loss_smoothed(
+                    lm=lm.float(),
+                    am=am.float(),
+                    symbols=rnnt_text,
+                    termination_symbol=self.blank,
+                    lm_only_scale=self.lm_only_scale,
+                    am_only_scale=self.am_only_scale,
+                    boundary=boundary,
+                    reduction="sum",
+                    return_grad=True,
+                    delay_penalty=delay_penalty,
+                )
+            # ranges : [B, T, prune_range]
+            ranges = k2.get_rnnt_prune_ranges(
+                px_grad=px_grad,
+                py_grad=py_grad,
+                boundary=boundary,
+                s_range=5,
+            )
+            am_pruned, lm_pruned = k2.do_rnnt_pruning(
+                am=self.joint.enc_ffn(encoder_out),
+                lm=self.joint.pred_ffn(predictor_out),
+                ranges=ranges,
+            )
+            logits = self.joint(
+                am_pruned,
+                lm_pruned,
+                pre_project=False,
+            )
+            with torch.cuda.amp.autocast(enabled=False):
+                pruned_loss = k2.rnnt_loss_pruned(
+                    logits=logits.float(),
+                    symbols=rnnt_text,
+                    ranges=ranges,
+                    termination_symbol=self.blank,
+                    boundary=boundary,
+                    reduction="sum",
+                    delay_penalty=delay_penalty,
+                )
+            simple_loss_scale = 0.5
+            if steps < self.warmup_steps:
+                simple_loss_scale = (1.0 - (steps / self.warmup_steps) *
+                                     (1.0 - simple_loss_scale))
+            pruned_loss_scale = 1.0
+            if steps < self.warmup_steps:
+                pruned_loss_scale = 0.1 + 0.9 * (steps / self.warmup_steps)
+            loss = (simple_loss_scale * simple_loss +
+                    pruned_loss_scale * pruned_loss)
+            loss = loss / encoder_out.size(0)
+        return loss

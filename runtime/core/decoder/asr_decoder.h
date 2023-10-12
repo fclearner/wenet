@@ -13,12 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #ifndef DECODER_ASR_DECODER_H_
 #define DECODER_ASR_DECODER_H_
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -72,6 +72,7 @@ struct WordPiece {
 struct DecodeResult {
   float score = -kFloatMax;
   std::string sentence;
+  std::unordered_set<std::string> contexts;
   std::vector<WordPiece> word_pieces;
 
   static bool CompareFunc(const DecodeResult& a, const DecodeResult& b) {
@@ -91,7 +92,7 @@ enum DecodeState {
 struct DecodeResource {
   std::shared_ptr<AsrModel> model = nullptr;
   std::shared_ptr<fst::SymbolTable> symbol_table = nullptr;
-  std::shared_ptr<fst::Fst<fst::StdArc>> fst = nullptr;
+  std::shared_ptr<fst::VectorFst<fst::StdArc>> fst = nullptr;
   std::shared_ptr<fst::SymbolTable> unit_table = nullptr;
   std::shared_ptr<ContextGraph> context_graph = nullptr;
   std::shared_ptr<PostProcessor> post_processor = nullptr;
@@ -137,8 +138,9 @@ class AsrDecoder {
   std::shared_ptr<FeaturePipeline> feature_pipeline_;
   std::shared_ptr<AsrModel> model_;
   std::shared_ptr<PostProcessor> post_processor_;
+  std::shared_ptr<ContextGraph> context_graph_;
 
-  std::shared_ptr<fst::Fst<fst::StdArc>> fst_ = nullptr;
+  std::shared_ptr<fst::VectorFst<fst::StdArc>> fst_ = nullptr;
   // output symbol table
   std::shared_ptr<fst::SymbolTable> symbol_table_;
   // e2e unit symbol table

@@ -4,19 +4,12 @@
 
 ## Run with Prebuilt Docker
 
-* Step 1. Download pretrained model(see the following link) or prepare your trained model.
-
-[AISHELL-1](https://wenet-1256283475.cos.ap-shanghai.myqcloud.com/models/aishell/20210601_u2%2B%2B_conformer_libtorch.tar.gz)
-| [AISHELL-2](https://wenet-1256283475.cos.ap-shanghai.myqcloud.com/models/aishell2/20210618_u2pp_conformer_libtorch.tar.gz)
-| [GigaSpeech](https://wenet-1256283475.cos.ap-shanghai.myqcloud.com/models/gigaspeech/20210728_u2pp_conformer_libtorch.tar.gz)
-| [LibriSpeech](https://wenet-1256283475.cos.ap-shanghai.myqcloud.com/models/librispeech/20210610_u2pp_conformer_libtorch.tar.gz)
-| [Multi-CN](https://wenet-1256283475.cos.ap-shanghai.myqcloud.com/models/multi_cn/20210815_unified_conformer_libtorch.tar.gz)
-
+* Step 1. Download the [pretrained models](../../docs/pretrained_models.en.md) or prepare your trained model.
 
 * Step 2. Start docker websocket server. Here is a demo.
 
 ``` sh
-model_dir=$PWD/20210602_u2++_conformer_libtorch  # absolute path
+model_dir=$PWD/aishell_u2pp_conformer_libtorch  # absolute path
 docker run --rm -it -p 10086:10086 -v $model_dir:/home/wenet/model wenetorg/wenet-mini:latest bash /home/run.sh
 ```
 
@@ -120,7 +113,7 @@ model_dir=your_model_dir
 export GLOG_logtostderr=1
 export GLOG_v=2
 wav_path=your_test_wav_path
-./build/websocket_client_main \
+./build/bin/websocket_client_main \
     --hostname 127.0.0.1 --port 10086 \
     --wav_path $wav_path 2>&1 | tee client.log
 ```
@@ -129,7 +122,7 @@ You can also start WebSocket client by web browser as described before.
 
 Here is a demo for command line based websocket server/client interaction.
 
-![Runtime server demo](../../../docs/images/runtime_server.gif)
+![Runtime server demo](../../docs/images/runtime_server.gif)
 
 ### gRPC
 
@@ -166,3 +159,17 @@ wav_path=your_test_wav_path
     --wav_path $wav_path 2>&1 | tee client.log
 ```
 
+### http
+
+* Step 1. Download or prepare your pretrained model.
+* Step 2. Build
+``` sh
+mkdir build && cd build && cmake -DHTTP=ON .. && cmake --build .
+```
+* Step 3. Start http server
+
+simply replace grpc_server_main with http_server_main of Step 3 in gRPC
+
+* Step 4. Start http client.
+
+simply replace grpc_client_main with http_client_main of Step 4 in gRPC

@@ -126,45 +126,6 @@ bool IsAlpha(const std::string& str) {
   return true;
 }
 
-bool SplitUTF8StringToWords(
-    const std::string& str,
-    const std::shared_ptr<fst::SymbolTable>& symbol_table,
-    std::vector<std::string>* words) {
-  std::vector<std::string> chars;
-  SplitUTF8StringToChars(Trim(str), &chars);
-
-  bool no_oov = true;
-  for (size_t start = 0; start < chars.size();) {
-    for (size_t end = chars.size(); end > start; --end) {
-      std::string word;
-      for (size_t i = start; i < end; i++) {
-        word += chars[i];
-      }
-      // Skip space.
-      if (word == " ") {
-        start = end;
-        continue;
-      }
-      // Add '▁' at the beginning of English word.
-      if (IsAlpha(word)) {
-        word = kSpaceSymbol + word;
-      }
-
-      if (symbol_table->Find(word) != -1) {
-        words->emplace_back(word);
-        start = end;
-        continue;
-      }
-      if (end == start + 1) {
-        ++start;
-        no_oov = false;
-        LOG(WARNING) << word << " is oov.";
-      }
-    }
-  }
-  return no_oov;
-}
-
 std::string ProcessBlank(const std::string& str, bool lowercase) {
   std::string result;
   if (!str.empty()) {
@@ -187,13 +148,17 @@ std::string ProcessBlank(const std::string& str, bool lowercase) {
     }
     // NOTE: convert string to wstring
     //       see issue 745: https://github.com/wenet-e2e/wenet/issues/745
-    std::locale loc("");
-    std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t> converter;
-    std::wstring wsresult = converter.from_bytes(result);
-    for (auto& c : wsresult) {
-      c = lowercase ? tolower(c, loc) : toupper(c, loc);
+    try {
+      std::locale loc("");
+      std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t> converter;
+      std::wstring wsresult = converter.from_bytes(result);
+      for (auto& c : wsresult) {
+        c = lowercase ? tolower(c, loc) : toupper(c, loc);
+      }
+      result = converter.to_bytes(wsresult);
+    } catch (std::exception& e) {
+      LOG(ERROR) << "convert wstring error " << e.what();
     }
-    result = converter.to_bytes(wsresult);
   }
   return result;
 }

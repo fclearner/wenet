@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #include "decoder/ctc_wfst_beam_search.h"
 
 #include <utility>
@@ -79,7 +78,7 @@ void CtcWfstBeamSearch::Search(const std::vector<std::vector<float>>& logp) {
   // Every time we get the log posterior, we decode it all before return
   for (int i = 0; i < logp.size(); i++) {
     float blank_score = std::exp(logp[i][0]);
-    if (blank_score > opts_.blank_skip_thresh) {
+    if (blank_score > opts_.blank_skip_thresh * opts_.blank_scale) {
       VLOG(3) << "skipping frame " << num_frames_ << " score " << blank_score;
       is_last_frame_blank_ = true;
       last_frame_prob_ = logp[i];
@@ -113,12 +112,11 @@ void CtcWfstBeamSearch::Search(const std::vector<std::vector<float>>& logp) {
     outputs_.resize(1);
     likelihood_.resize(1);
     kaldi::Lattice lat;
-    decoder_.GetBestPath(&lat, false);
+    decoder_.GetBestPath(&lat, true);
     std::vector<int> alignment;
     kaldi::LatticeWeight weight;
     fst::GetLinearSymbolSequence(lat, &alignment, &outputs_[0], &weight);
     ConvertToInputs(alignment, &inputs_[0]);
-    RemoveContinuousTags(&outputs_[0]);
     VLOG(3) << weight.Value1() << " " << weight.Value2();
     likelihood_[0] = -(weight.Value1() + weight.Value2());
   }
@@ -158,7 +156,6 @@ void CtcWfstBeamSearch::FinalizeSearch() {
       fst::GetLinearSymbolSequence(nbest_lats[i], &alignment, &outputs_[i],
                                    &weight);
       ConvertToInputs(alignment, &inputs_[i], &times_[i]);
-      RemoveContinuousTags(&outputs_[i]);
       likelihood_[i] = -(weight.Value1() + weight.Value2());
     }
   }
@@ -178,21 +175,6 @@ void CtcWfstBeamSearch::ConvertToInputs(const std::vector<int>& alignment,
     input->push_back(alignment[cur] - 1);
     if (time != nullptr) {
       time->push_back(decoded_frames_mapping_[cur]);
-    }
-  }
-}
-
-void CtcWfstBeamSearch::RemoveContinuousTags(std::vector<int>* output) {
-  if (context_graph_) {
-    for (auto it = output->begin(); it != output->end();) {
-      if (*it == context_graph_->start_tag_id() ||
-          *it == context_graph_->end_tag_id()) {
-        if (it + 1 != output->end() && *it == *(it + 1)) {
-          it = output->erase(it);
-          continue;
-        }
-      }
-      ++it;
     }
   }
 }

@@ -1,4 +1,4 @@
-# WeNet Python Binding
+# Python Binding
 
 This is a python binding of WeNet.
 
@@ -19,7 +19,23 @@ Python 3.6+ is required.
 pip3 install wenetruntime
 ```
 
-## Usage
+## Command-line usage
+
+```
+wenetruntime audio.wav
+```
+
+We support mainstream audio formats, such as wav, mp3, flac and so on.
+
+You can specify the language using the `--language` option,
+currently we support `en` (English) and `chs` (中文).
+
+## Programming usage
+
+Note:
+
+1. For macOS, wenetruntime packed `libtorch.so`, so we can't import torch and wenetruntime at the same time.
+2. For Windows and Linux, wenetruntime depends on torch. Please install and import the same version `torch` as wenetruntime.
 
 ### Non-streaming Usage
 
@@ -27,9 +43,9 @@ pip3 install wenetruntime
 import sys
 import wenetruntime as wenet
 
-wav_file = sys.argv[1]
+audio_file = sys.argv[1]  # support wav, mp3, flac, etc
 decoder = wenet.Decoder(lang='chs')
-ans = decoder.decode_wav(wav_file)
+ans = decoder.decode(audio_file)
 print(ans)
 ```
 
@@ -75,7 +91,7 @@ with wave.open(test_wav, 'rb') as fin:
     assert fin.getnchannels() == 1
     wav = fin.readframes(fin.getnframes())
 
-decoder = wenet.Decoder(lang='chs')
+decoder = wenet.Decoder(lang='chs', streaming=True)
 # We suppose the wav is 16k, 16bits, and decode every 0.5 seconds
 interval = int(0.5 * 16000) * 2
 for i in range(0, len(wav), interval):
@@ -91,7 +107,7 @@ You can use the same parameters as we introduced above to control the behavior o
 ## Build on Your Local Machine
 
 ``` sh
-git clone git@github.com:wenet-e2e/wenet.git
+git clone https://github.com/wenet-e2e/wenet.git
 cd wenet/runtime/binding/python
 python setup.py install
 ```

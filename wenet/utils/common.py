@@ -43,14 +43,25 @@ def pad_list(xs: List[torch.Tensor], pad_value: int):
                 [1., 0., 0., 0.]])
 
     """
-    n_batch = len(xs)
-    max_len = max([x.size(0) for x in xs])
-    pad = torch.zeros(n_batch, max_len, dtype=xs[0].dtype, device=xs[0].device)
-    pad = pad.fill_(pad_value)
-    for i in range(n_batch):
-        pad[i, :xs[i].size(0)] = xs[i]
-
-    return pad
+    max_len = max([len(item) for item in xs])
+    batchs = len(xs)
+    ndim = xs[0].ndim
+    if ndim == 1:
+        pad_res = torch.zeros(batchs, max_len,
+                              dtype=xs[0].dtype, device=xs[0].device)
+    elif ndim == 2:
+        pad_res = torch.zeros(batchs, max_len, xs[0].shape[1],
+                              dtype=xs[0].dtype, device=xs[0].device)
+    elif ndim == 3:
+        pad_res = torch.zeros(batchs, max_len, xs[0].shape[1],
+                              xs[0].shape[2], dtype=xs[0].dtype,
+                              device=xs[0].device)
+    else:
+        raise ValueError(f"Unsupported ndim: {ndim}")
+    pad_res.fill_(pad_value)
+    for i in range(batchs):
+        pad_res[i, :len(xs[i])] = xs[i]
+    return pad_res
 
 
 def add_blank(ys_pad: torch.Tensor, blank: int,
@@ -167,7 +178,7 @@ def th_accuracy(pad_outputs: torch.Tensor, pad_targets: torch.Tensor,
 
     Args:
         pad_outputs (Tensor): Prediction tensors (B * Lmax, D).
-        pad_targets (LongTensor): Target label tensors (B, Lmax, D).
+        pad_targets (LongTensor): Target label tensors (B, Lmax).
         ignore_label (int): Ignore label id.
 
     Returns:

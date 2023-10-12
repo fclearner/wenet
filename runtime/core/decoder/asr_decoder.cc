@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #include "decoder/asr_decoder.h"
 
 #include <ctype.h>
@@ -34,6 +33,7 @@ AsrDecoder::AsrDecoder(std::shared_ptr<FeaturePipeline> feature_pipeline,
       // status of the model
       model_(resource->model->Copy()),
       post_processor_(resource->post_processor),
+      context_graph_(resource->context_graph),
       symbol_table_(resource->symbol_table),
       fst_(resource->fst),
       unit_table_(resource->unit_table),
@@ -107,6 +107,12 @@ DecodeState AsrDecoder::AdvanceDecoding(bool block) {
   std::vector<std::vector<float>> ctc_log_probs;
   model_->ForwardEncoder(chunk_feats, &ctc_log_probs);
   int forward_time = timer.Elapsed();
+  if (opts_.ctc_wfst_search_opts.blank_scale != 1.0) {
+    for (int i = 0; i < ctc_log_probs.size(); i++) {
+      ctc_log_probs[i][0] = ctc_log_probs[i][0] +
+                            std::log(opts_.ctc_wfst_search_opts.blank_scale);
+    }
+  }
   timer.Reset();
   searcher_->Search(ctc_log_probs);
   int search_time = timer.Elapsed();
@@ -192,6 +198,19 @@ void AsrDecoder::UpdateResult(bool finish) {
 
   if (DecodedSomething()) {
     VLOG(1) << "Partial CTC result " << result_[0].sentence;
+    if (context_graph_ != nullptr) {
+      int cur_state = 0;
+      float score = 0;
+      for (int ilabel : inputs[0]) {
+        cur_state = context_graph_->GetNextState(cur_state, ilabel, &score,
+                                                 &(result_[0].contexts));
+      }
+      std::string contexts;
+      for (const auto& context : result_[0].contexts) {
+        contexts += context + ", ";
+      }
+      VLOG(1) << "Contexts: " << contexts;
+    }
   }
 }
 
@@ -210,6 +229,7 @@ void AsrDecoder::AttentionRescoring() {
     return;
   }
 
+  // TODO(zhendong.peng): Do we need rescoring while context matching?
   std::vector<float> rescoring_score;
   model_->AttentionRescoring(hypotheses, opts_.reverse_weight,
                              &rescoring_score);

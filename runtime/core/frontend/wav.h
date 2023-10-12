@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #ifndef FRONTEND_WAV_H_
 #define FRONTEND_WAV_H_
 
@@ -71,10 +70,17 @@ class WavReader {
 
     WavHeader header;
     fread(&header, 1, sizeof(header), fp);
+    if ((0 != strncmp(header.riff, "RIFF", 4)) ||
+        (0 != strncmp(header.wav, "WAVE", 4)) ||
+        (0 != strncmp(header.fmt, "fmt", 3))) {
+      fprintf(stderr, "WaveData: expect audio format data.\n");
+      return false;
+    }
     if (header.fmt_size < 16) {
       fprintf(stderr,
               "WaveData: expect PCM format data "
               "to have fmt chunk of at least size 16.\n");
+      fclose(fp);
       return false;
     } else if (header.fmt_size > 16) {
       int offset = 44 - 8 + header.fmt_size - 16;
@@ -134,9 +140,7 @@ class WavReader {
   int bits_per_sample() const { return bits_per_sample_; }
   int num_samples() const { return num_samples_; }
 
-  ~WavReader() {
-    delete[] data_;
-  }
+  ~WavReader() { delete[] data_; }
 
   const float* data() const { return data_; }
 
@@ -159,7 +163,7 @@ class WavWriter {
         bits_per_sample_(bits_per_sample) {}
 
   void Write(const std::string& filename) {
-    FILE* fp = fopen(filename.c_str(), "w");
+    FILE* fp = fopen(filename.c_str(), "wb");
     WavHeader header(num_samples_, num_channel_, sample_rate_,
                      bits_per_sample_);
     fwrite(&header, 1, sizeof(header), fp);
@@ -199,14 +203,14 @@ class WavWriter {
 class StreamWavWriter {
  public:
   StreamWavWriter(int num_channel, int sample_rate, int bits_per_sample)
-     : num_channel_(num_channel),
-       sample_rate_(sample_rate),
-       bits_per_sample_(bits_per_sample),
-       total_num_samples_(0) {}
+      : num_channel_(num_channel),
+        sample_rate_(sample_rate),
+        bits_per_sample_(bits_per_sample),
+        total_num_samples_(0) {}
 
-  StreamWavWriter(const std::string& filename, int num_channel,
-                  int sample_rate, int bits_per_sample)
-     : StreamWavWriter(num_channel, sample_rate, bits_per_sample) {
+  StreamWavWriter(const std::string& filename, int num_channel, int sample_rate,
+                  int bits_per_sample)
+      : StreamWavWriter(num_channel, sample_rate, bits_per_sample) {
     Open(filename);
   }
 

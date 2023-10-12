@@ -24,9 +24,10 @@ try:
     import k2
     from icefall.utils import get_texts
     from icefall.decode import get_lattice, Nbest, one_best_decoding
+    from icefall.mmi import LFMMILoss
+    from icefall.mmi_graph_compiler import MmiTrainingGraphCompiler
 except ImportError:
-    print('Failed to import k2 and icefall. \
-        Notice that they are necessary for hlg_onebest and hlg_rescore')
+    print('Warning: Failed to import k2 & icefall, which are for LF-MMI/hlg')
 
 from wenet.transformer.ctc import CTC
 from wenet.transformer.decoder import TransformerDecoder
@@ -37,6 +38,7 @@ from wenet.utils.common import (IGNORE_ID, add_sos_eos, log_add,
                                 reverse_pad_list)
 from wenet.utils.mask import (make_pad_mask, mask_finished_preds,
                               mask_finished_scores, subsequent_mask)
+from wenet.utils.context_graph import ContextGraph
 
 
 class ASRModel(torch.nn.Module):
@@ -52,6 +54,7 @@ class ASRModel(torch.nn.Module):
         reverse_weight: float = 0.0,
         lsm_weight: float = 0.0,
         length_normalized_loss: bool = False,
+        lfmmi_dir: str = '',
     ):
         assert 0.0 <= ctc_weight <= 1.0, ctc_weight
 
@@ -73,7 +76,11 @@ class ASRModel(torch.nn.Module):
             smoothing=lsm_weight,
             normalize_length=length_normalized_loss,
         )
+        self.lfmmi_dir = lfmmi_dir
+        if self.lfmmi_dir != '':
+            self.load_lfmmi_resource()
 
+    @torch.jit.ignore(drop=True)
     def forward(
         self,
         speech: torch.Tensor,
@@ -89,6 +96,7 @@ class ASRModel(torch.nn.Module):
             text: (Batch, Length)
             text_lengths: (Batch,)
         """
+
         assert text_lengths.dim() == 1, text_lengths.shape
         # Check that batch_size is unified
         assert (speech.shape[0] == speech_lengths.shape[0] == text.shape[0] ==
@@ -105,10 +113,14 @@ class ASRModel(torch.nn.Module):
         else:
             loss_att = None
 
-        # 2b. CTC branch
+        # 2b. CTC branch or LF-MMI loss
         if self.ctc_weight != 0.0:
-            loss_ctc = self.ctc(encoder_out, encoder_out_lens, text,
-                                text_lengths)
+            if self.lfmmi_dir != '':
+                loss_ctc = self._calc_lfmmi_loss(encoder_out, encoder_mask,
+                                                 text)
+            else:
+                loss_ctc = self.ctc(encoder_out, encoder_out_lens, text,
+                                    text_lengths)
         else:
             loss_ctc = None
 
@@ -253,6 +265,14 @@ class ASRModel(torch.nn.Module):
             scores = scores + top_k_logp  # (B*N, N), broadcast add
             scores = scores.view(batch_size, beam_size * beam_size)  # (B, N*N)
             scores, offset_k_index = scores.topk(k=beam_size)  # (B, N)
+            # Update cache to be consistent with new topk scores / hyps
+            cache_index = (offset_k_index // beam_size).view(-1)  # (B*N)
+            base_cache_index = (torch.arange(batch_size, device=device).view(
+                -1, 1).repeat([1, beam_size]) * beam_size).view(-1)  # (B*N)
+            cache_index = base_cache_index + cache_index
+            cache = [
+                torch.index_select(c, dim=0, index=cache_index) for c in cache
+            ]
             scores = scores.view(-1, 1)  # (B*N, 1)
             # 2.4. Compute base index in top_k_index,
             # regard top_k_index as (B*N*N),regard offset_k_index as (B*N),
@@ -339,6 +359,7 @@ class ASRModel(torch.nn.Module):
         decoding_chunk_size: int = -1,
         num_decoding_left_chunks: int = -1,
         simulate_streaming: bool = False,
+        context_graph: ContextGraph = None,
     ) -> Tuple[List[List[int]], torch.Tensor]:
         """ CTC prefix beam search inner implementation
 
@@ -374,46 +395,61 @@ class ASRModel(torch.nn.Module):
         ctc_probs = self.ctc.log_softmax(
             encoder_out)  # (1, maxlen, vocab_size)
         ctc_probs = ctc_probs.squeeze(0)
-        # cur_hyps: (prefix, (blank_ending_score, none_blank_ending_score))
-        cur_hyps = [(tuple(), (0.0, -float('inf')))]
+        # cur_hyps: (prefix, (blank_ending_score, none_blank_ending_score,
+        #                       context_state, context_score))
+        cur_hyps = [(tuple(), (0.0, -float('inf'), 0, 0.0))]
         # 2. CTC beam search step by step
         for t in range(0, maxlen):
             logp = ctc_probs[t]  # (vocab_size,)
-            # key: prefix, value (pb, pnb), default value(-inf, -inf)
-            next_hyps = defaultdict(lambda: (-float('inf'), -float('inf')))
+            # key: prefix, value (pb, pnb, context_state, context_score),
+            # default value(-inf, -inf, 0, 0.0)
+            next_hyps = defaultdict(lambda:
+                                    (-float('inf'), -float('inf'), 0, 0.0))
             # 2.1 First beam prune: select topk best
             top_k_logp, top_k_index = logp.topk(beam_size)  # (beam_size,)
             for s in top_k_index:
                 s = s.item()
                 ps = logp[s].item()
-                for prefix, (pb, pnb) in cur_hyps:
+                for prefix, (pb, pnb, c_state, c_score) in cur_hyps:
                     last = prefix[-1] if len(prefix) > 0 else None
                     if s == 0:  # blank
-                        n_pb, n_pnb = next_hyps[prefix]
+                        n_pb, n_pnb, _, _ = next_hyps[prefix]
                         n_pb = log_add([n_pb, pb + ps, pnb + ps])
-                        next_hyps[prefix] = (n_pb, n_pnb)
+                        next_hyps[prefix] = (n_pb, n_pnb, c_state, c_score)
                     elif s == last:
                         #  Update *ss -> *s;
-                        n_pb, n_pnb = next_hyps[prefix]
+                        n_pb, n_pnb, _, _ = next_hyps[prefix]
                         n_pnb = log_add([n_pnb, pnb + ps])
-                        next_hyps[prefix] = (n_pb, n_pnb)
+                        next_hyps[prefix] = (n_pb, n_pnb, c_state, c_score)
                         # Update *s-s -> *ss, - is for blank
                         n_prefix = prefix + (s, )
-                        n_pb, n_pnb = next_hyps[n_prefix]
+                        n_pb, n_pnb, _, _ = next_hyps[n_prefix]
+                        new_c_state, new_c_score = 0, 0
+                        if context_graph is not None:
+                            new_c_state, new_c_score = context_graph. \
+                                find_next_state(c_state, s)
                         n_pnb = log_add([n_pnb, pb + ps])
-                        next_hyps[n_prefix] = (n_pb, n_pnb)
+                        next_hyps[n_prefix] = (n_pb, n_pnb, new_c_state,
+                                               c_score + new_c_score)
                     else:
                         n_prefix = prefix + (s, )
-                        n_pb, n_pnb = next_hyps[n_prefix]
+                        n_pb, n_pnb, _, _ = next_hyps[n_prefix]
+                        new_c_state, new_c_score = 0, 0
+                        if context_graph is not None:
+                            new_c_state, new_c_score = context_graph. \
+                                find_next_state(c_state, s)
                         n_pnb = log_add([n_pnb, pb + ps, pnb + ps])
-                        next_hyps[n_prefix] = (n_pb, n_pnb)
+                        next_hyps[n_prefix] = (n_pb, n_pnb, new_c_state,
+                                               c_score + new_c_score)
 
             # 2.2 Second beam prune
-            next_hyps = sorted(next_hyps.items(),
-                               key=lambda x: log_add(list(x[1])),
-                               reverse=True)
+            next_hyps = sorted(
+                next_hyps.items(),
+                key=lambda x: log_add([x[1][0], x[1][1]]) + x[1][3],
+                reverse=True)
             cur_hyps = next_hyps[:beam_size]
-        hyps = [(y[0], log_add([y[1][0], y[1][1]])) for y in cur_hyps]
+        hyps = [(y[0], log_add([y[1][0], y[1][1]]) + y[1][3])
+                for y in cur_hyps]
         return hyps, encoder_out
 
     def ctc_prefix_beam_search(
@@ -424,6 +460,7 @@ class ASRModel(torch.nn.Module):
         decoding_chunk_size: int = -1,
         num_decoding_left_chunks: int = -1,
         simulate_streaming: bool = False,
+        context_graph: ContextGraph = None,
     ) -> List[int]:
         """ Apply CTC prefix beam search
 
@@ -445,7 +482,8 @@ class ASRModel(torch.nn.Module):
         hyps, _ = self._ctc_prefix_beam_search(speech, speech_lengths,
                                                beam_size, decoding_chunk_size,
                                                num_decoding_left_chunks,
-                                               simulate_streaming)
+                                               simulate_streaming,
+                                               context_graph)
         return hyps[0]
 
     def attention_rescoring(
@@ -458,6 +496,7 @@ class ASRModel(torch.nn.Module):
         ctc_weight: float = 0.0,
         simulate_streaming: bool = False,
         reverse_weight: float = 0.0,
+        context_graph: ContextGraph = None,
     ) -> List[int]:
         """ Apply attention rescoring decoding, CTC prefix beam search
             is applied first to get nbest, then we resoring the nbest on
@@ -492,7 +531,7 @@ class ASRModel(torch.nn.Module):
         # encoder_out: (1, maxlen, encoder_dim), len(hyps) = beam_size
         hyps, encoder_out = self._ctc_prefix_beam_search(
             speech, speech_lengths, beam_size, decoding_chunk_size,
-            num_decoding_left_chunks, simulate_streaming)
+            num_decoding_left_chunks, simulate_streaming, context_graph)
 
         assert len(hyps) == beam_size
         hyps_pad = pad_sequence([
@@ -546,9 +585,57 @@ class ASRModel(torch.nn.Module):
                 best_index = i
         return hyps[best_index][0], best_score
 
+    @torch.jit.ignore(drop=True)
+    def load_lfmmi_resource(self):
+        with open('{}/tokens.txt'.format(self.lfmmi_dir), 'r') as fin:
+            for line in fin:
+                arr = line.strip().split()
+                if arr[0] == '<sos/eos>':
+                    self.sos_eos_id = int(arr[1])
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.graph_compiler = MmiTrainingGraphCompiler(
+            self.lfmmi_dir,
+            device=device,
+            oov="<UNK>",
+            sos_id=self.sos_eos_id,
+            eos_id=self.sos_eos_id,
+        )
+        self.lfmmi = LFMMILoss(
+            graph_compiler=self.graph_compiler,
+            den_scale=1,
+            use_pruned_intersect=False,
+        )
+        self.word_table = {}
+        with open('{}/words.txt'.format(self.lfmmi_dir), 'r') as fin:
+            for line in fin:
+                arr = line.strip().split()
+                assert len(arr) == 2
+                self.word_table[int(arr[1])] = arr[0]
+
+    @torch.jit.ignore(drop=True)
+    def _calc_lfmmi_loss(self, encoder_out, encoder_mask, text):
+        ctc_probs = self.ctc.log_softmax(encoder_out)
+        supervision_segments = torch.stack((
+            torch.arange(len(encoder_mask)),
+            torch.zeros(len(encoder_mask)),
+            encoder_mask.squeeze(dim=1).sum(dim=1).to('cpu'),
+        ), 1).to(torch.int32)
+        dense_fsa_vec = k2.DenseFsaVec(
+            ctc_probs,
+            supervision_segments,
+            allow_truncate=3,
+        )
+        text = [
+            ' '.join([self.word_table[j.item()] for j in i if j != -1])
+            for i in text
+        ]
+        loss = self.lfmmi(dense_fsa_vec=dense_fsa_vec, texts=text) / len(text)
+        return loss
+
     def load_hlg_resource_if_necessary(self, hlg, word):
         if not hasattr(self, 'hlg'):
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            device = torch.device(
+                'cuda' if torch.cuda.is_available() else 'cpu')
             self.hlg = k2.Fsa.from_dict(torch.load(hlg, map_location=device))
         if not hasattr(self.hlg, "lm_scores"):
             self.hlg.lm_scores = self.hlg.scores.clone()
@@ -580,21 +667,22 @@ class ASRModel(torch.nn.Module):
         ctc_probs = self.ctc.log_softmax(
             encoder_out)  # (1, maxlen, vocab_size)
         supervision_segments = torch.stack(
-            (torch.arange(len(encoder_mask)),
-             torch.zeros(len(encoder_mask)),
-             encoder_mask.squeeze(dim=1).sum(dim=1).cpu()), 1,).to(torch.int32)
-        lattice = get_lattice(
-            nnet_output=ctc_probs,
-            decoding_graph=self.hlg,
-            supervision_segments=supervision_segments,
-            search_beam=20,
-            output_beam=7,
-            min_active_states=30,
-            max_active_states=10000,
-            subsampling_factor=4)
+            (torch.arange(len(encoder_mask)), torch.zeros(len(encoder_mask)),
+             encoder_mask.squeeze(dim=1).sum(dim=1).cpu()),
+            1,
+        ).to(torch.int32)
+        lattice = get_lattice(nnet_output=ctc_probs,
+                              decoding_graph=self.hlg,
+                              supervision_segments=supervision_segments,
+                              search_beam=20,
+                              output_beam=7,
+                              min_active_states=30,
+                              max_active_states=10000,
+                              subsampling_factor=4)
         best_path = one_best_decoding(lattice=lattice, use_double_scores=True)
         hyps = get_texts(best_path)
-        hyps = [[symbol_table[k] for j in i for k in self.word_table[j]] for i in hyps]
+        hyps = [[symbol_table[k] for j in i for k in self.word_table[j]]
+                for i in hyps]
         return hyps
 
     @torch.no_grad()
@@ -621,23 +709,24 @@ class ASRModel(torch.nn.Module):
         ctc_probs = self.ctc.log_softmax(
             encoder_out)  # (1, maxlen, vocab_size)
         supervision_segments = torch.stack(
-            (torch.arange(len(encoder_mask)),
-             torch.zeros(len(encoder_mask)),
-             encoder_mask.squeeze(dim=1).sum(dim=1).cpu()), 1,).to(torch.int32)
-        lattice = get_lattice(
-            nnet_output=ctc_probs,
-            decoding_graph=self.hlg,
-            supervision_segments=supervision_segments,
-            search_beam=20,
-            output_beam=7,
-            min_active_states=30,
-            max_active_states=10000,
-            subsampling_factor=4)
+            (torch.arange(len(encoder_mask)), torch.zeros(len(encoder_mask)),
+             encoder_mask.squeeze(dim=1).sum(dim=1).cpu()),
+            1,
+        ).to(torch.int32)
+        lattice = get_lattice(nnet_output=ctc_probs,
+                              decoding_graph=self.hlg,
+                              supervision_segments=supervision_segments,
+                              search_beam=20,
+                              output_beam=7,
+                              min_active_states=30,
+                              max_active_states=10000,
+                              subsampling_factor=4)
         nbest = Nbest.from_lattice(
             lattice=lattice,
             num_paths=100,
             use_double_scores=True,
-            nbest_scale=0.5,)
+            nbest_scale=0.5,
+        )
         nbest = nbest.intersect(lattice)
         assert hasattr(nbest.fsa, "lm_scores")
         assert hasattr(nbest.fsa, "tokens")
@@ -650,8 +739,7 @@ class ASRModel(torch.nn.Module):
 
         # cal attention_score
         hyps_pad = pad_sequence([
-            torch.tensor(hyp, device=device, dtype=torch.long)
-            for hyp in hyps
+            torch.tensor(hyp, device=device, dtype=torch.long) for hyp in hyps
         ], True, self.ignore_id)  # (beam_size, max_hyps_len)
         ori_hyps_pad = hyps_pad
         hyps_lens = torch.tensor([len(hyp) for hyp in hyps],
@@ -663,7 +751,8 @@ class ASRModel(torch.nn.Module):
         tot_scores = nbest.tot_scores()
         repeats = [tot_scores[i].shape[0] for i in range(tot_scores.dim0)]
         for i in range(len(encoder_out)):
-            encoder_out_repeat.append(encoder_out[i: i + 1].repeat(repeats[i], 1, 1))
+            encoder_out_repeat.append(encoder_out[i:i + 1].repeat(
+                repeats[i], 1, 1))
         encoder_out = torch.concat(encoder_out_repeat, dim=0)
         encoder_mask = torch.ones(encoder_out.size(0),
                                   1,
@@ -685,9 +774,11 @@ class ASRModel(torch.nn.Module):
         r_decoder_out = torch.nn.functional.log_softmax(r_decoder_out, dim=-1)
         r_decoder_out = r_decoder_out
 
-        decoder_scores = torch.tensor([sum([decoder_out[i, j, hyps[i][j]]
-                                            for j in range(len(hyps[i]))])
-                                       for i in range(len(hyps))], device=device)
+        decoder_scores = torch.tensor([
+            sum([decoder_out[i, j, hyps[i][j]] for j in range(len(hyps[i]))])
+            for i in range(len(hyps))
+        ],
+                                      device=device)  # noqa
         r_decoder_scores = []
         for i in range(len(hyps)):
             score = 0
@@ -705,7 +796,8 @@ class ASRModel(torch.nn.Module):
         max_indexes = ragged_tot_scores.argmax()
         best_path = k2.index_fsa(nbest.fsa, max_indexes)
         hyps = get_texts(best_path)
-        hyps = [[symbol_table[k] for j in i for k in self.word_table[j]] for i in hyps]
+        hyps = [[symbol_table[k] for j in i for k in self.word_table[j]]
+                for i in hyps]
         return hyps
 
     @torch.jit.export

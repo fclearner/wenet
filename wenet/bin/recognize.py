@@ -25,10 +25,13 @@ import yaml
 from torch.utils.data import DataLoader
 
 from wenet.dataset.dataset import Dataset
+from wenet.paraformer.search.beam_search import build_beam_search
 from wenet.utils.checkpoint import load_checkpoint
 from wenet.utils.file_utils import read_symbol_table, read_non_lang_symbols
 from wenet.utils.config import override_config
 from wenet.utils.init_model import init_model
+from wenet.utils.context_graph import ContextGraph
+
 
 def get_args():
     parser = argparse.ArgumentParser(description='recognize with your model')
@@ -44,8 +47,9 @@ def get_args():
                         help='gpu id for this rank, -1 for cpu')
     parser.add_argument('--checkpoint', required=True, help='checkpoint model')
     parser.add_argument('--dict', required=True, help='dict file')
-    parser.add_argument("--non_lang_syms",
-                        help="non-linguistic symbol file. One symbol per line.")
+    parser.add_argument(
+        "--non_lang_syms",
+        help="non-linguistic symbol file. One symbol per line.")
     parser.add_argument('--beam_size',
                         type=int,
                         default=10,
@@ -61,11 +65,18 @@ def get_args():
                         help='asr result file')
     parser.add_argument('--mode',
                         choices=[
-                            'attention', 'ctc_greedy_search',
-                            'ctc_prefix_beam_search', 'attention_rescoring',
-                            'rnnt_greedy_search', 'rnnt_beam_search',
-                            'rnnt_beam_attn_rescoring', 'ctc_beam_td_attn_rescoring',
-                            'hlg_onebest', 'hlg_rescore'
+                            'attention',
+                            'ctc_greedy_search',
+                            'ctc_prefix_beam_search',
+                            'attention_rescoring',
+                            'rnnt_greedy_search',
+                            'rnnt_beam_search',
+                            'rnnt_beam_attn_rescoring',
+                            'ctc_beam_td_attn_rescoring',
+                            'hlg_onebest',
+                            'hlg_rescore',
+                            'paraformer_greedy_search',
+                            'paraformer_beam_search',
                         ],
                         default='attention',
                         help='decoding mode')
@@ -89,13 +100,13 @@ def get_args():
     parser.add_argument('--transducer_weight',
                         type=float,
                         default=0.0,
-                        help='transducer weight for rescoring weight in transducer \
-                                 attention rescore mode')
+                        help='transducer weight for rescoring weight in '
+                        'transducer attention rescore mode')
     parser.add_argument('--attn_weight',
                         type=float,
                         default=0.0,
-                        help='attention weight for rescoring weight in transducer \
-                              attention rescore mode')
+                        help='attention weight for rescoring weight in '
+                        'transducer attention rescore mode')
     parser.add_argument('--decoding_chunk_size',
                         type=int,
                         default=-1,
@@ -149,6 +160,22 @@ def get_args():
                         default=0.0,
                         help='lm scale for hlg attention rescore decode')
 
+    parser.add_argument(
+        '--context_bias_mode',
+        type=str,
+        default='',
+        help='''Context bias mode, selectable from the following
+                                option: decoding-graph、deep-biasing''')
+    parser.add_argument('--context_list_path',
+                        type=str,
+                        default='',
+                        help='Context list path')
+    parser.add_argument('--context_graph_score',
+                        type=float,
+                        default=0.0,
+                        help='''The higher the score, the greater the degree of
+                                bias using decoding-graph for biasing''')
+
     args = parser.parse_args()
     print(args)
     return args
@@ -160,8 +187,11 @@ def main():
                         format='%(asctime)s %(levelname)s %(message)s')
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 
-    if args.mode in ['ctc_prefix_beam_search', 'attention_rescoring'
-                     ] and args.batch_size > 1:
+    if args.mode in [
+            'ctc_prefix_beam_search',
+            'attention_rescoring',
+            'paraformer_beam_search',
+    ] and args.batch_size > 1:
         logging.fatal(
             'decoding mode {} must be running with batch_size == 1'.format(
                 args.mode))
@@ -218,6 +248,18 @@ def main():
     model = model.to(device)
 
     model.eval()
+
+    # Build BeamSearchCIF object
+    if args.mode == 'paraformer_beam_search':
+        paraformer_beam_search = build_beam_search(model, args, device)
+    else:
+        paraformer_beam_search = None
+
+    context_graph = None
+    if 'decoding-graph' in args.context_bias_mode:
+        context_graph = ContextGraph(args.context_list_path, symbol_table,
+                                     args.bpe_model, args.context_graph_score)
+
     with torch.no_grad(), open(args.result_file, 'w') as fout:
         for batch_idx, batch in enumerate(test_data_loader):
             keys, feats, target, feats_lengths, target_lengths = batch
@@ -306,7 +348,8 @@ def main():
                     args.beam_size,
                     decoding_chunk_size=args.decoding_chunk_size,
                     num_decoding_left_chunks=args.num_decoding_left_chunks,
-                    simulate_streaming=args.simulate_streaming)
+                    simulate_streaming=args.simulate_streaming,
+                    context_graph=context_graph)
                 hyps = [hyp]
             elif args.mode == 'attention_rescoring':
                 assert (feats.size(0) == 1)
@@ -318,7 +361,8 @@ def main():
                     num_decoding_left_chunks=args.num_decoding_left_chunks,
                     ctc_weight=args.ctc_weight,
                     simulate_streaming=args.simulate_streaming,
-                    reverse_weight=args.reverse_weight)
+                    reverse_weight=args.reverse_weight,
+                    context_graph=context_graph)
                 hyps = [hyp]
             elif args.mode == 'hlg_onebest':
                 hyps = model.hlg_onebest(
@@ -343,14 +387,31 @@ def main():
                     hlg=args.hlg,
                     word=args.word,
                     symbol_table=symbol_table)
+            elif args.mode == 'paraformer_beam_search':
+                hyps = model.paraformer_beam_search(
+                    feats,
+                    feats_lengths,
+                    beam_search=paraformer_beam_search,
+                    decoding_chunk_size=args.decoding_chunk_size,
+                    num_decoding_left_chunks=args.num_decoding_left_chunks,
+                    simulate_streaming=args.simulate_streaming)
+            elif args.mode == 'paraformer_greedy_search':
+                hyps = model.paraformer_greedy_search(
+                    feats,
+                    feats_lengths,
+                    decoding_chunk_size=args.decoding_chunk_size,
+                    num_decoding_left_chunks=args.num_decoding_left_chunks,
+                    simulate_streaming=args.simulate_streaming)
             for i, key in enumerate(keys):
                 content = []
                 for w in hyps[i]:
                     if w == eos:
                         break
                     content.append(char_dict[w])
-                logging.info('{} {}'.format(key, args.connect_symbol.join(content)))
-                fout.write('{} {}\n'.format(key, args.connect_symbol.join(content)))
+                logging.info('{} {}'.format(key,
+                                            args.connect_symbol.join(content)))
+                fout.write('{} {}\n'.format(key,
+                                            args.connect_symbol.join(content)))
 
 
 if __name__ == '__main__':

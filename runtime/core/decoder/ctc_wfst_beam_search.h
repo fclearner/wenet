@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #ifndef DECODER_CTC_WFST_BEAM_SEARCH_H_
 #define DECODER_CTC_WFST_BEAM_SEARCH_H_
 
@@ -55,6 +54,7 @@ struct CtcWfstBeamSearchOptions : public kaldi::LatticeFasterDecoderConfig {
   // When blank score is greater than this thresh, skip the frame in viterbi
   // search
   float blank_skip_thresh = 0.98;
+  float blank_scale = 1.0;
 };
 
 class CtcWfstBeamSearch : public SearchInterface {
@@ -81,7 +81,6 @@ class CtcWfstBeamSearch : public SearchInterface {
   void ConvertToInputs(const std::vector<int>& alignment,
                        std::vector<int>* input,
                        std::vector<int>* time = nullptr);
-  void RemoveContinuousTags(std::vector<int>* output);
 
   int num_frames_ = 0;
   std::vector<int> decoded_frames_mapping_;

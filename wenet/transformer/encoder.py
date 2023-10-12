@@ -18,7 +18,6 @@
 from typing import Tuple
 
 import torch
-from typeguard import check_argument_types
 
 from wenet.transformer.attention import MultiHeadedAttention
 from wenet.transformer.attention import RelPositionMultiHeadedAttention
@@ -32,6 +31,7 @@ from wenet.transformer.positionwise_feed_forward import PositionwiseFeedForward
 from wenet.transformer.subsampling import Conv2dSubsampling4
 from wenet.transformer.subsampling import Conv2dSubsampling6
 from wenet.transformer.subsampling import Conv2dSubsampling8
+from wenet.transformer.subsampling import EmbedinigNoSubsampling
 from wenet.transformer.subsampling import LinearNoSubsampling
 from wenet.utils.common import get_activation
 from wenet.utils.mask import make_pad_mask
@@ -52,7 +52,6 @@ class BaseEncoder(torch.nn.Module):
         input_layer: str = "conv2d",
         pos_enc_layer_type: str = "abs_pos",
         normalize_before: bool = True,
-        concat_after: bool = False,
         static_chunk_size: int = 0,
         use_dynamic_chunk: bool = False,
         global_cmvn: torch.nn.Module = None,
@@ -77,10 +76,6 @@ class BaseEncoder(torch.nn.Module):
             normalize_before (bool):
                 True: use layer_norm before each sub-block of a layer.
                 False: use layer_norm after each sub-block of a layer.
-            concat_after (bool): whether to concat attention layer's input
-                and output.
-                True: x -> x + linear(concat(x, att(x)))
-                False: x -> x + att(x)
             static_chunk_size (int): chunk size for static chunk training and
                 decoding
             use_dynamic_chunk (bool): whether use dynamic chunk size for
@@ -90,7 +85,6 @@ class BaseEncoder(torch.nn.Module):
             use_dynamic_left_chunk (bool): whether use dynamic left chunk in
                 dynamic chunk training
         """
-        assert check_argument_types()
         super().__init__()
         self._output_size = output_size
 
@@ -111,6 +105,8 @@ class BaseEncoder(torch.nn.Module):
             subsampling_class = Conv2dSubsampling6
         elif input_layer == "conv2d8":
             subsampling_class = Conv2dSubsampling8
+        elif input_layer == "embed":
+            subsampling_class = EmbedinigNoSubsampling
         else:
             raise ValueError("unknown input_layer: " + input_layer)
 
@@ -341,7 +337,6 @@ class TransformerEncoder(BaseEncoder):
         input_layer: str = "conv2d",
         pos_enc_layer_type: str = "abs_pos",
         normalize_before: bool = True,
-        concat_after: bool = False,
         static_chunk_size: int = 0,
         use_dynamic_chunk: bool = False,
         global_cmvn: torch.nn.Module = None,
@@ -351,12 +346,11 @@ class TransformerEncoder(BaseEncoder):
 
         See Encoder for the meaning of each parameter.
         """
-        assert check_argument_types()
         super().__init__(input_size, output_size, attention_heads,
                          linear_units, num_blocks, dropout_rate,
                          positional_dropout_rate, attention_dropout_rate,
                          input_layer, pos_enc_layer_type, normalize_before,
-                         concat_after, static_chunk_size, use_dynamic_chunk,
+                         static_chunk_size, use_dynamic_chunk,
                          global_cmvn, use_dynamic_left_chunk)
         self.encoders = torch.nn.ModuleList([
             TransformerEncoderLayer(
@@ -365,7 +359,7 @@ class TransformerEncoder(BaseEncoder):
                                      attention_dropout_rate),
                 PositionwiseFeedForward(output_size, linear_units,
                                         dropout_rate), dropout_rate,
-                normalize_before, concat_after) for _ in range(num_blocks)
+                normalize_before) for _ in range(num_blocks)
         ])
 
 
@@ -384,7 +378,6 @@ class ConformerEncoder(BaseEncoder):
         input_layer: str = "conv2d",
         pos_enc_layer_type: str = "rel_pos",
         normalize_before: bool = True,
-        concat_after: bool = False,
         static_chunk_size: int = 0,
         use_dynamic_chunk: bool = False,
         global_cmvn: torch.nn.Module = None,
@@ -414,12 +407,11 @@ class ConformerEncoder(BaseEncoder):
             cnn_module_kernel (int): Kernel size of convolution module.
             causal (bool): whether to use causal convolution or not.
         """
-        assert check_argument_types()
         super().__init__(input_size, output_size, attention_heads,
                          linear_units, num_blocks, dropout_rate,
                          positional_dropout_rate, attention_dropout_rate,
                          input_layer, pos_enc_layer_type, normalize_before,
-                         concat_after, static_chunk_size, use_dynamic_chunk,
+                         static_chunk_size, use_dynamic_chunk,
                          global_cmvn, use_dynamic_left_chunk)
         activation = get_activation(activation_type)
 
@@ -457,6 +449,5 @@ class ConformerEncoder(BaseEncoder):
                     *convolution_layer_args) if use_cnn_module else None,
                 dropout_rate,
                 normalize_before,
-                concat_after,
             ) for _ in range(num_blocks)
         ])
