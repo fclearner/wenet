@@ -46,6 +46,10 @@ def get_args():
                         type=int, help='cache chunks')
     parser.add_argument('--reverse_weight', default=0.5,
                         type=float, help='reverse_weight in attention_rescoing')
+    parser.add_argument('--has_context_module',
+                        default=False,
+                        action='store_true',
+                        help='export context_module, default is False')
     args = parser.parse_args()
     return args
 
@@ -354,6 +358,86 @@ def export_decoder(asr_model, args):
     print("\t\tCheck onnx_decoder, pass!")
 
 
+def export_context_module(asr_model, args):
+    print("Stage-4: export context_module")
+    context_module = torch.jit.script(asr_model.context_module)
+    context_module.forward = context_module.forward
+    context_module_outpath = os.path.join(args['output_dir'],
+                                          'context_module.onnx')
+
+    print("\tStage-4.1: prepare inputs for context_module")
+    # hard code context_lengths->200, it is dynamic axe.
+    context_list = torch.randint(low=0, high=args['vocab_size'],
+                                 size=(259, 9), dtype=torch.int64)
+    context_list_lengths = torch.tensor([x.size(0) for x in context_list],
+                                         dtype=torch.int32)
+    encoder_out = torch.randn((1, 200, args['output_size']), dtype=torch.float)
+    biasing_score = torch.randn((1), dtype=torch.double)
+
+    print("\tStage-4.2: torch.onnx.export")
+    dynamic_axes = {'context_list': {0: 'context_list_lengths',
+                                     1: 'max_word_length'},
+                    'context_list_lengths': {0: 'context_list_lengths'},
+                    'encoder_out': {1: 'T'},
+                    'encoder_bias_out': {1: 'T'}
+                    }
+    inputs = (context_list, context_list_lengths, encoder_out, biasing_score,
+              True)
+    torch.onnx.export(context_module,
+                      inputs,
+                      context_module_outpath,
+                      export_params=True,
+                      opset_version=13,
+                      do_constant_folding=True,
+                      input_names=['context_list', 'context_list_lengths', 
+                                   'encoder_out', 'biasing_score', 'recognize'],
+                      output_names=['encoder_bias_out', 'bias_out'],
+                      dynamic_axes=dynamic_axes,
+                      verbose=True)
+    onnx_context_module = onnx.load(context_module_outpath)
+    for (k, v) in args.items():
+        meta = onnx_context_module.metadata_props.add()
+        meta.key, meta.value = str(k), str(v)
+    onnx.checker.check_model(onnx_context_module)
+    onnx.helper.printable_graph(onnx_context_module.graph)
+    onnx.save(onnx_context_module, context_module_outpath)
+    print_input_output_info(onnx_context_module, "onnx_context_module")
+    model_fp32 = context_module_outpath
+    model_quant = os.path.join(args['output_dir'], 'context_module.quant.onnx')
+    quantize_dynamic(model_fp32, model_quant, weight_type=QuantType.QUInt8)
+    print('\t\tExport onnx_context_module, done! see {}'.format(context_module_outpath))
+
+    print("\tStage-4.3: check onnx_context_module and torch_context_module")
+    context_list = torch.randint(low=0, high=args['vocab_size'],
+                                 size=(5000, 20), dtype=torch.int64)
+    context_list_lengths = torch.tensor([x.size(0) for x in context_list],
+                                         dtype=torch.int32)
+    encoder_out = torch.randn((1, 16, args['output_size']), dtype=torch.float)
+    biasing_score = torch.randn((1), dtype=torch.double)
+    recognize = torch.tensor(True, dtype=torch.bool)
+    context_out, _ = context_module(context_list, context_list_lengths,
+                                    encoder_out, biasing_score, True)
+    ort_session = onnxruntime.InferenceSession(
+        context_module_outpath, providers=['CPUExecutionProvider'])
+    input_names = [node.name for node in onnx_context_module.graph.input]
+    ort_inputs = {
+        'context_list': to_numpy(context_list),
+        'context_list_lengths': to_numpy(context_list_lengths),
+        'encoder_out': to_numpy(encoder_out),
+        'biasing_score': to_numpy(biasing_score),
+        'recognize': to_numpy(recognize),
+    }
+    for k in list(ort_inputs):
+        if k not in input_names:
+            ort_inputs.pop(k)
+    onnx_output = ort_session.run(None, ort_inputs)
+    # trace_function = torch.jit.trace(asr_model.context_module, (context_list, context_list_lengths, encoder_out, biasing_score, context_out))
+    np.testing.assert_allclose(to_numpy(context_out),
+                               onnx_output[0],
+                               rtol=1e-03,
+                               atol=1e-05)
+    print("\t\tCheck context_module, pass!")
+
 def main():
     torch.manual_seed(777)
     args = get_args()
@@ -405,6 +489,8 @@ def main():
     export_encoder(model, arguments)
     export_ctc(model, arguments)
     export_decoder(model, arguments)
+    if args.has_context_module:
+        export_context_module(model, arguments)
 
 
 if __name__ == '__main__':

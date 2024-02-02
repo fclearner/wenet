@@ -101,6 +101,9 @@ DEFINE_string(unit_path, "",
 DEFINE_string(context_path, "", "context path, is used to build context graph");
 DEFINE_double(context_score, 3.0, "is used to rescore the decoded result");
 
+DEFINE_bool(deep_bias, false, "deep biasing if needed");
+DEFINE_double(deep_bias_score, 1.0, "is used to enhance encoder result");
+
 // PostProcessOptions flags
 DEFINE_int32(language_type, 0,
              "remove spaces according to language type"
@@ -229,6 +232,12 @@ std::shared_ptr<DecodeResource> InitDecodeResourceFromFlags() {
     config.context_score = FLAGS_context_score;
     resource->context_graph = std::make_shared<ContextGraph>(config);
     resource->context_graph->BuildContextGraph(contexts, unit_table);
+    if (FLAGS_deep_bias) {
+      DeepBiasConfig deep_bias_config;
+      deep_bias_config.deep_bias_score = FLAGS_deep_bias_score;
+      resource->deep_bias = std::make_shared<DeepBias>(deep_bias_config);
+      resource->deep_bias->SetHotwords(contexts, unit_table);
+    }
   }
 
   PostProcessOptions post_process_opts;

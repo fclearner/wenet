@@ -51,4 +51,21 @@ void AsrModel::ForwardEncoder(
   }
 }
 
+void AsrModel::ForwardEncoder(
+    const std::vector<std::vector<float>>& chunk_feats,
+    std::vector<std::vector<float>>* ctc_prob,
+    std::vector<std::vector<int>>& context_data,
+    std::vector<int>& context_data_lens,
+    const float deep_biasing_score) {
+  ctc_prob->clear();
+  int num_frames = cached_feature_.size() + chunk_feats.size();
+  if (num_frames >= right_context_ + 1) {
+    this->ForwardEncoderFunc(
+       chunk_feats, ctc_prob, context_data, context_data_lens,
+       deep_biasing_score
+    );
+    this->CacheFeature(chunk_feats);
+  }
+}
+
 }  // namespace wenet

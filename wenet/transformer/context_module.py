@@ -45,9 +45,10 @@ class BLSTM(torch.nn.Module):
     def forward(self, sen_batch, sen_lengths):
         sen_batch = torch.clamp(sen_batch, 0)
         sen_batch = self.word_embedding(sen_batch)
+        # export onnx model enforce_sorted set True
         pack_seq = torch.nn.utils.rnn.pack_padded_sequence(
             sen_batch, sen_lengths.to('cpu').type(torch.int32),
-            batch_first=True, enforce_sorted=False)
+            batch_first=True, enforce_sorted=True)
         _, last_state = self.sen_rnn(pack_seq)
         laste_h = last_state[0]
         laste_c = last_state[1]
@@ -120,23 +121,24 @@ class ContextModule(torch.nn.Module):
         return context_emb
 
     def forward(self,
-                context_emb: torch.Tensor,
+                context_list: torch.Tensor,
+                context_lengths: torch.Tensor,
                 encoder_out: torch.Tensor,
                 biasing_score: float = 1.0,
-                recognize: bool = False) \
+                recognize: bool = True) \
             -> Tuple[torch.Tensor, torch.Tensor]:
         """Using context embeddings for deep biasing.
 
         Args:
-            biasing_score (int): degree of context biasing
+            biasing_score (float): degree of context biasing
             recognize (bool): no context decoder computation if True
         """
+        context_emb = self.forward_context_emb(context_list, context_lengths)
         context_emb = context_emb.expand(encoder_out.shape[0], -1, -1)
         context_emb, _ = self.biasing_layer(encoder_out, context_emb,
                                             context_emb)
-        encoder_bias_out = \
-            self.norm_aft_combiner(encoder_out +
-                                   self.combiner(context_emb) * biasing_score)
+        encoder_bias_out = encoder_out + self.combiner(context_emb) * biasing_score
+        encoder_bias_out = self.norm_aft_combiner(encoder_bias_out)
         if recognize:
             return encoder_bias_out, torch.tensor(0.0)
         bias_out = self.context_decoder(context_emb)

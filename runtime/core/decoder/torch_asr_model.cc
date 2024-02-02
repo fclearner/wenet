@@ -114,6 +114,13 @@ void TorchAsrModel::Reset() {
 }
 
 void TorchAsrModel::ForwardEncoderFunc(
+      const std::vector<std::vector<float>>& chunk_feats,
+      std::vector<std::vector<float>>* ctc_prob,
+      std::vector<std::vector<int>>& context_data,
+      std::vector<int>& context_data_lens,
+      const float deep_biasing_score) {};
+
+void TorchAsrModel::ForwardEncoderFunc(
     const std::vector<std::vector<float>>& chunk_feats,
     std::vector<std::vector<float>>* out_prob) {
   // 1. Prepare libtorch required data, splice cached_feature_ and chunk_feats

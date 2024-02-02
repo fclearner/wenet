@@ -2,6 +2,7 @@ set(decoder_srcs
   asr_decoder.cc
   asr_model.cc
   context_graph.cc
+  deep_biasing.cc
   ctc_prefix_beam_search.cc
   ctc_wfst_beam_search.cc
   ctc_endpoint.cc

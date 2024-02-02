@@ -52,6 +52,13 @@ class TorchAsrModel : public AsrModel {
   void ForwardEncoderFunc(const std::vector<std::vector<float>>& chunk_feats,
                           std::vector<std::vector<float>>* ctc_prob) override;
 
+  void ForwardEncoderFunc(
+      const std::vector<std::vector<float>>& chunk_feats,
+      std::vector<std::vector<float>>* ctc_prob,
+      std::vector<std::vector<int>>& context_data,
+      std::vector<int>& context_data_lens,
+      const float deep_biasing_score) override;
+
   float ComputeAttentionScore(const torch::Tensor& prob,
                               const std::vector<int>& hyp, int eos);
 

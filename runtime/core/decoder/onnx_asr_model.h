@@ -25,6 +25,7 @@
 #include "onnxruntime_cxx_api.h"  // NOLINT
 
 #include "decoder/asr_model.h"
+#include "decoder/deep_biasing.h"
 #include "utils/log.h"
 #include "utils/utils.h"
 
@@ -50,7 +51,17 @@ class OnnxAsrModel : public AsrModel {
  protected:
   void ForwardEncoderFunc(const std::vector<std::vector<float>>& chunk_feats,
                           std::vector<std::vector<float>>* ctc_prob) override;
+  void ForwardEncoderFunc(
+      const std::vector<std::vector<float>>& chunk_feats,
+      std::vector<std::vector<float>>* ctc_prob,
+      std::vector<std::vector<int>>& context_data,
+      std::vector<int>& context_data_lens,
+      const float deep_biasing_score) override;
 
+  void ForwardEncoderChunk(const std::vector<std::vector<float>>& chunk_feats,
+                           std::vector<Ort::Value>* ctc_inputs);
+  void ForwardCTC(std::vector<Ort::Value>& ctc_inputs,
+                  std::vector<std::vector<float>>* ctc_prob);
   float ComputeAttentionScore(const float* prob, const std::vector<int>& hyp,
                               int eos, int decode_out_len);
 
@@ -68,11 +79,13 @@ class OnnxAsrModel : public AsrModel {
   std::shared_ptr<Ort::Session> encoder_session_ = nullptr;
   std::shared_ptr<Ort::Session> rescore_session_ = nullptr;
   std::shared_ptr<Ort::Session> ctc_session_ = nullptr;
+  std::shared_ptr<Ort::Session> deepbias_session_ = nullptr;
 
   // node names
   std::vector<const char*> encoder_in_names_, encoder_out_names_;
   std::vector<const char*> ctc_in_names_, ctc_out_names_;
   std::vector<const char*> rescore_in_names_, rescore_out_names_;
+  std::vector<const char*> deepbias_in_names_, deepbias_out_names_;
 
   // caches
   Ort::Value att_cache_ort_{nullptr};

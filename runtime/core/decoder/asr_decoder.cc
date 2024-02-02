@@ -38,7 +38,8 @@ AsrDecoder::AsrDecoder(std::shared_ptr<FeaturePipeline> feature_pipeline,
       fst_(resource->fst),
       unit_table_(resource->unit_table),
       opts_(opts),
-      ctc_endpointer_(new CtcEndpoint(opts.ctc_endpoint_config)) {
+      ctc_endpointer_(new CtcEndpoint(opts.ctc_endpoint_config)),
+      deep_bias_(resource->deep_bias) {
   if (opts_.reverse_weight > 0) {
     // Check if model has a right to left decoder
     CHECK(model_->is_bidirectional_decoder());
@@ -105,7 +106,16 @@ DecodeState AsrDecoder::AdvanceDecoding(bool block) {
           << chunk_feats.size();
   Timer timer;
   std::vector<std::vector<float>> ctc_log_probs;
-  model_->ForwardEncoder(chunk_feats, &ctc_log_probs);
+  if (deep_bias_ != nullptr) {
+    auto context_data = deep_bias_->GetContextData();
+    auto context_data_lens = deep_bias_->GetContextDataLens();
+    const auto score = deep_bias_->GetBiasingScore();
+    model_->ForwardEncoder(
+      chunk_feats, &ctc_log_probs, context_data, context_data_lens, score);
+  }
+  else{
+    model_->ForwardEncoder(chunk_feats, &ctc_log_probs);
+  }
   int forward_time = timer.Elapsed();
   if (opts_.ctc_wfst_search_opts.blank_scale != 1.0) {
     for (int i = 0; i < ctc_log_probs.size(); i++) {
