@@ -42,13 +42,17 @@ class AsrModel {
   virtual void ForwardEncoder(
       const std::vector<std::vector<float>>& chunk_feats,
       std::vector<std::vector<float>>* ctc_prob,
-      std::vector<std::vector<int>>& context_data,
-      std::vector<int>& context_data_lens,
+      const std::vector<std::vector<float>>& deepbias_embedding,
       const float deep_biasing_score);
 
   virtual void AttentionRescoring(const std::vector<std::vector<int>>& hyps,
                                   float reverse_weight,
                                   std::vector<float>* rescoring_score) = 0;
+
+  virtual void ForwardDeepBiasEmb(
+      std::vector<std::vector<int>>& context_data,
+      std::vector<int>& context_data_lens,
+      std::vector<std::vector<float>>* deepbias_embedding_) = 0;
 
   virtual std::shared_ptr<AsrModel> Copy() const = 0;
 
@@ -56,6 +60,11 @@ class AsrModel {
   virtual void ForwardEncoderFunc(
       const std::vector<std::vector<float>>& chunk_feats,
       std::vector<std::vector<float>>* ctc_prob) = 0;
+  virtual void ForwardEncoderFunc(
+      const std::vector<std::vector<float>>& chunk_feats,
+      std::vector<std::vector<float>>* ctc_prob,
+      const std::vector<std::vector<float>>& deepbias_embedding,
+      const float deep_biasing_score) = 0;
   virtual void ForwardEncoderFunc(
       const std::vector<std::vector<float>>& chunk_feats,
       std::vector<std::vector<float>>* ctc_prob,

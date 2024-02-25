@@ -116,9 +116,13 @@ void TorchAsrModel::Reset() {
 void TorchAsrModel::ForwardEncoderFunc(
       const std::vector<std::vector<float>>& chunk_feats,
       std::vector<std::vector<float>>* ctc_prob,
+      const std::vector<std::vector<float>>& deepbias_embedding,
+      const float deep_biasing_score) {};
+
+void TorchAsrModel::ForwardDeepBiasEmb(
       std::vector<std::vector<int>>& context_data,
       std::vector<int>& context_data_lens,
-      const float deep_biasing_score) {};
+      std::vector<std::vector<float>>* deepbias_embedding_) {};
 
 void TorchAsrModel::ForwardEncoderFunc(
     const std::vector<std::vector<float>>& chunk_feats,

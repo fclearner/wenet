@@ -39,7 +39,12 @@ class OnnxAsrModel : public AsrModel {
   OnnxAsrModel() = default;
   OnnxAsrModel(const OnnxAsrModel& other);
   void Read(const std::string& model_dir);
+  void ReadDeepBiasModule(const std::string& model_dir);
   void Reset() override;
+  void ForwardDeepBiasEmb(
+      std::vector<std::vector<int>>& context_data,
+      std::vector<int>& context_data_lens,
+      std::vector<std::vector<float>>* deepbias_embedding_) override;
   void AttentionRescoring(const std::vector<std::vector<int>>& hyps,
                           float reverse_weight,
                           std::vector<float>* rescoring_score) override;
@@ -54,8 +59,7 @@ class OnnxAsrModel : public AsrModel {
   void ForwardEncoderFunc(
       const std::vector<std::vector<float>>& chunk_feats,
       std::vector<std::vector<float>>* ctc_prob,
-      std::vector<std::vector<int>>& context_data,
-      std::vector<int>& context_data_lens,
+      const std::vector<std::vector<float>>& deepbias_embedding,
       const float deep_biasing_score) override;
 
   void ForwardEncoderChunk(const std::vector<std::vector<float>>& chunk_feats,
@@ -79,12 +83,14 @@ class OnnxAsrModel : public AsrModel {
   std::shared_ptr<Ort::Session> encoder_session_ = nullptr;
   std::shared_ptr<Ort::Session> rescore_session_ = nullptr;
   std::shared_ptr<Ort::Session> ctc_session_ = nullptr;
+  std::shared_ptr<Ort::Session> deepbiasemb_session_ = nullptr;
   std::shared_ptr<Ort::Session> deepbias_session_ = nullptr;
 
   // node names
   std::vector<const char*> encoder_in_names_, encoder_out_names_;
   std::vector<const char*> ctc_in_names_, ctc_out_names_;
   std::vector<const char*> rescore_in_names_, rescore_out_names_;
+  std::vector<const char*> deepbiasemb_in_names_, deepbiasemb_out_names_;
   std::vector<const char*> deepbias_in_names_, deepbias_out_names_;
 
   // caches

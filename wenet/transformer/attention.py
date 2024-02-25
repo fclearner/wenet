@@ -185,6 +185,13 @@ class MultiHeadedAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         return self.forward_attention(v, scores, mask), new_cache
 
+    def get_attn_mat(self, query: torch.Tensor, key: torch.Tensor,
+                     value: torch.Tensor):
+        q, k, v = self.forward_qkv(query, key, value)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+        attn = torch.softmax(scores, dim=-1)
+        return attn
+
 
 class RelPositionMultiHeadedAttention(MultiHeadedAttention):
     """Multi-Head Attention layer with relative position encoding.

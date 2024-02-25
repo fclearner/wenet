@@ -25,7 +25,7 @@
 
 namespace wenet {
 
-Ort::Env OnnxAsrModel::env_ = Ort::Env(ORT_LOGGING_LEVEL_WARNING, "");
+Ort::Env OnnxAsrModel::env_ = Ort::Env(ORT_LOGGING_LEVEL_ERROR, "");
 Ort::SessionOptions OnnxAsrModel::session_options_ = Ort::SessionOptions();
 
 void OnnxAsrModel::InitEngineThreads(int num_threads) {
@@ -78,7 +78,6 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
   std::string encoder_onnx_path = model_dir + "/encoder.onnx";
   std::string rescore_onnx_path = model_dir + "/decoder.onnx";
   std::string ctc_onnx_path = model_dir + "/ctc.onnx";
-  std::string deepbias_onnx_path = model_dir + "/context_module.onnx";
 
   // 1. Load sessions
   try {
@@ -89,8 +88,6 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
         env_, ToWString(rescore_onnx_path).c_str(), session_options_);
     ctc_session_ = std::make_shared<Ort::Session>(
         env_, ToWString(ctc_onnx_path).c_str(), session_options_);
-    deepbias_session_ = std::make_shared<Ort::Session>(
-        env_, ToWString(deepbias_onnx_path).c_str(), session_options_);
 #else
     encoder_session_ = std::make_shared<Ort::Session>(
         env_, encoder_onnx_path.c_str(), session_options_);
@@ -98,8 +95,6 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
         env_, rescore_onnx_path.c_str(), session_options_);
     ctc_session_ = std::make_shared<Ort::Session>(env_, ctc_onnx_path.c_str(),
                                                   session_options_);
-    deepbias_session_ = std::make_shared<Ort::Session>(
-      env_, deepbias_onnx_path.c_str(), session_options_);
 #endif
   } catch (std::exception const& e) {
     LOG(ERROR) << "error when load onnx model: " << e.what();
@@ -150,6 +145,32 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
   GetInputOutputInfo(ctc_session_, &ctc_in_names_, &ctc_out_names_);
   LOG(INFO) << "Onnx Rescore:";
   GetInputOutputInfo(rescore_session_, &rescore_in_names_, &rescore_out_names_);
+}
+
+void OnnxAsrModel::ReadDeepBiasModule(const std::string& model_dir) {
+  std::string deepbias_emb_onnx_path = model_dir + "/deepbias_emb.onnx";
+  std::string deepbias_onnx_path = model_dir + "/deepbias.onnx";
+  // 1. Load sessions
+  try {
+#ifdef _MSC_VER
+    deepbiasemb_session_ = std::make_shared<Ort::Session>(
+        env_, ToWString(deepbias_emb_onnx_path).c_str(), session_options_);
+    deepbias_session_ = std::make_shared<Ort::Session>(
+        env_, ToWString(deepbias_onnx_path).c_str(), session_options_);
+#else
+    deepbiasemb_session_ = std::make_shared<Ort::Session>(
+      env_, deepbias_emb_onnx_path.c_str(), session_options_);
+    deepbias_session_ = std::make_shared<Ort::Session>(
+      env_, deepbias_onnx_path.c_str(), session_options_);
+#endif
+  } catch (std::exception const& e) {
+    LOG(ERROR) << "error when load onnx model: " << e.what();
+    exit(0);
+  }
+  LOG(INFO) << "Onnx DeepBiasEmb:";
+  GetInputOutputInfo(
+    deepbiasemb_session_, &deepbiasemb_in_names_, &deepbiasemb_out_names_
+  );
   LOG(INFO) << "Onnx DeepBias:";
   GetInputOutputInfo(
     deepbias_session_, &deepbias_in_names_, &deepbias_out_names_
@@ -175,6 +196,7 @@ OnnxAsrModel::OnnxAsrModel(const OnnxAsrModel& other) {
   encoder_session_ = other.encoder_session_;
   ctc_session_ = other.ctc_session_;
   rescore_session_ = other.rescore_session_;
+  deepbiasemb_session_ = other.deepbiasemb_session_;
   deepbias_session_ = other.deepbias_session_;
 
   // node names
@@ -184,6 +206,8 @@ OnnxAsrModel::OnnxAsrModel(const OnnxAsrModel& other) {
   ctc_out_names_ = other.ctc_out_names_;
   rescore_in_names_ = other.rescore_in_names_;
   rescore_out_names_ = other.rescore_out_names_;
+  deepbiasemb_in_names_ = other.deepbiasemb_in_names_;
+  deepbiasemb_out_names_ = other.deepbiasemb_out_names_;
   deepbias_in_names_ = other.deepbias_in_names_;
   deepbias_out_names_ = other.deepbias_out_names_;
 }
@@ -323,30 +347,19 @@ void OnnxAsrModel::ForwardCTC(std::vector<Ort::Value>& ctc_inputs,
   }
 }
 
-void OnnxAsrModel::ForwardEncoderFunc(
-    const std::vector<std::vector<float>>& chunk_feats,
-    std::vector<std::vector<float>>* out_prob) {
-  std::vector<Ort::Value> ctc_inputs;
-  ForwardEncoderChunk(chunk_feats, &ctc_inputs);
-  ForwardCTC(ctc_inputs, out_prob);
-}
-
-void OnnxAsrModel::ForwardEncoderFunc(
-    const std::vector<std::vector<float>>& chunk_feats,
-    std::vector<std::vector<float>>* out_prob,  
+void OnnxAsrModel::ForwardDeepBiasEmb(
     std::vector<std::vector<int>>& context_data,
     std::vector<int>& context_data_lens,
-    const float deep_biasing_score) {
+    std::vector<std::vector<float>>* deepbias_embedding_) {
   Ort::MemoryInfo memory_info =
     Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
-  std::vector<Ort::Value> ctc_inputs;
-  ForwardEncoderChunk(chunk_feats, &ctc_inputs);
-
+  // 1.prepare_inputs
   std::vector<int64_t> context_data_int64;
+  context_data_int64.reserve(context_data.size()*context_data[0].size());
   for (const auto& row : context_data) {
-      for (int val : row) {
-          context_data_int64.push_back(val);
-      }
+    for (int val : row) {
+        context_data_int64.push_back(val);
+    }
   }
 
   const int64_t context_data_dims[2] = {
@@ -371,28 +384,94 @@ void OnnxAsrModel::ForwardEncoderFunc(
     static_cast<int64_t>(context_data_lens.size())
   };
 
-  // 创建表示维度信息的张量
   Ort::Value context_list_lengths_ort = Ort::Value::CreateTensor<int32_t>(
       memory_info, context_data_lens_32.data(), context_data_lens_32.size(),
       context_data_lens_dims, 1);
-  // 创建deep_biasing_score的ORT张量
-  float score = deep_biasing_score; 
-  const int64_t score_dims[] = {1}; // deep_biasing_score是单个值
-  Ort::Value score_ort = Ort::Value::CreateTensor<float>(
-      memory_info, &score, 1, score_dims, 1);
+
   std::vector<Ort::Value> inputs;
-  for (auto name : deepbias_in_names_) {
+  for (auto name : deepbiasemb_in_names_) {
     if (!strcmp(name, "context_list")) {
       inputs.emplace_back(std::move(context_data_ort));
     } else if (!strcmp(name, "context_list_lengths")) {
       inputs.emplace_back(std::move(context_list_lengths_ort));
+    }
+  }
+
+  // 2. model inference
+  std::vector<Ort::Value> ort_outputs = deepbiasemb_session_->Run(
+      Ort::RunOptions{nullptr}, deepbiasemb_in_names_.data(), inputs.data(),
+      inputs.size(), deepbiasemb_out_names_.data(),
+      deepbiasemb_out_names_.size());
+  float* emb_data = ort_outputs[0].GetTensorMutableData<float>();
+  auto emb_type_info = ort_outputs[0].GetTensorTypeAndShapeInfo();
+
+  int num_outputs = emb_type_info.GetShape()[1];
+  int output_dim = emb_type_info.GetShape()[2];
+  deepbias_embedding_->resize(num_outputs);
+  for (int i = 0; i < num_outputs; i++) {
+    (*deepbias_embedding_)[i].resize(output_dim);
+    memcpy((*deepbias_embedding_)[i].data(), emb_data + i * output_dim,
+           sizeof(float) * output_dim);
+  }
+}
+
+void OnnxAsrModel::ForwardEncoderFunc(
+    const std::vector<std::vector<float>>& chunk_feats,
+    std::vector<std::vector<float>>* out_prob) {
+  std::vector<Ort::Value> ctc_inputs;
+  ForwardEncoderChunk(chunk_feats, &ctc_inputs);
+  ForwardCTC(ctc_inputs, out_prob);
+}
+
+void OnnxAsrModel::ForwardEncoderFunc(
+    const std::vector<std::vector<float>>& chunk_feats,
+    std::vector<std::vector<float>>* out_prob,
+    const std::vector<std::vector<float>>& deepbias_embedding,
+    const float deep_biasing_score) {
+  Ort::MemoryInfo memory_info =
+    Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+  std::vector<Ort::Value> ctc_inputs;
+  ForwardEncoderChunk(chunk_feats, &ctc_inputs);
+
+  // deep_bias_module
+  float score = deep_biasing_score; 
+  const int64_t score_dims[] = {1}; // deep_biasing_score是单个值
+  Ort::Value score_ort = Ort::Value::CreateTensor<float>(
+      memory_info, &score, 1, score_dims, 1);
+
+  const int64_t deepbias_embedding_dims[3] = {
+      1,
+      static_cast<int64_t>(deepbias_embedding.size()),
+      static_cast<int64_t>(deepbias_embedding[0].size())
+  };
+  std::vector<float> deepbias_embedding_data;
+  deepbias_embedding_data.reserve(
+      deepbias_embedding.size()*deepbias_embedding[0].size()
+  );
+  for (const auto& row : deepbias_embedding) {
+    for (float val : row) {
+        deepbias_embedding_data.push_back(val);
+    }
+  }
+
+  Ort::Value deepbias_embedding_ort = Ort::Value::CreateTensor<float>(
+      memory_info, 
+      deepbias_embedding_data.data(), 
+      deepbias_embedding_data.size(), 
+      deepbias_embedding_dims, 
+      3
+  );
+
+  std::vector<Ort::Value> inputs;
+  for (auto name : deepbias_in_names_) {
+    if (!strcmp(name, "context_emb")) {
+      inputs.emplace_back(std::move(deepbias_embedding_ort));
     } else if (!strcmp(name, "encoder_out")) {
       inputs.emplace_back(std::move(ctc_inputs[0]));
     } else if (!strcmp(name, "biasing_score")) {
       inputs.emplace_back(std::move(score_ort));
     }
   }
-
   std::vector<Ort::Value> ort_outputs = deepbias_session_->Run(
       Ort::RunOptions{nullptr}, deepbias_in_names_.data(), inputs.data(),
       inputs.size(), deepbias_out_names_.data(), deepbias_out_names_.size());

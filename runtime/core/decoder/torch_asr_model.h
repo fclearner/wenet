@@ -43,6 +43,10 @@ class TorchAsrModel : public AsrModel {
   void Read(const std::string& model_path);
   std::shared_ptr<TorchModule> torch_model() const { return model_; }
   void Reset() override;
+  void ForwardDeepBiasEmb(
+      std::vector<std::vector<int>>& context_data,
+      std::vector<int>& context_data_lens,
+      std::vector<std::vector<float>>* deepbias_embedding_) override;
   void AttentionRescoring(const std::vector<std::vector<int>>& hyps,
                           float reverse_weight,
                           std::vector<float>* rescoring_score) override;
@@ -55,8 +59,7 @@ class TorchAsrModel : public AsrModel {
   void ForwardEncoderFunc(
       const std::vector<std::vector<float>>& chunk_feats,
       std::vector<std::vector<float>>* ctc_prob,
-      std::vector<std::vector<int>>& context_data,
-      std::vector<int>& context_data_lens,
+      const std::vector<std::vector<float>>& deepbias_embedding,
       const float deep_biasing_score) override;
 
   float ComputeAttentionScore(const torch::Tensor& prob,

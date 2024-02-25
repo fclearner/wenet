@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "decoder/deep_biasing.h"
+#include <memory>
+
+#include "fst/determinize.h"
+
 #include "decoder/context_graph.h"
+#include "decoder/deep_biasing.h"
+
 
 namespace wenet {
 
@@ -28,7 +33,8 @@ void DeepBias::PadContextUnits() {
 
   // padding
   for (auto& context : context_data_) {
-      context.resize(max_length, -1); // 假设-1是padding值
+      // padding with -1
+      context.resize(max_length, -1);
   }
 }
 

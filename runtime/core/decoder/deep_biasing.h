@@ -21,12 +21,13 @@
 #include <vector>
 
 #include "fst/fst.h"
+#include "fst/vector-fst.h"
 
 namespace wenet {
 
 struct DeepBiasConfig {
   int max_contexts = 5000;
-  int max_context_length = 100;
+  int max_context_length = 10;
   float deep_bias_score = 1.0;
 };
 
@@ -49,11 +50,12 @@ class DeepBias {
   const float GetBiasingScore() const {
     return config_.deep_bias_score;
   }
+  std::unique_ptr<const std::vector<std::vector<float>>> deepbias_embedding;
 
  private:
   DeepBiasConfig config_;
-  std::vector<std::vector<int>> context_data_;
-  std::vector<int> context_data_lengths_;
+  std::vector<std::vector<int>> context_data_ = {{0}};
+  std::vector<int> context_data_lengths_ = {1};
 };
 
 }  // namespace wenet

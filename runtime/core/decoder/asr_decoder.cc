@@ -107,11 +107,9 @@ DecodeState AsrDecoder::AdvanceDecoding(bool block) {
   Timer timer;
   std::vector<std::vector<float>> ctc_log_probs;
   if (deep_bias_ != nullptr) {
-    auto context_data = deep_bias_->GetContextData();
-    auto context_data_lens = deep_bias_->GetContextDataLens();
     const auto score = deep_bias_->GetBiasingScore();
     model_->ForwardEncoder(
-      chunk_feats, &ctc_log_probs, context_data, context_data_lens, score);
+      chunk_feats, &ctc_log_probs, *deep_bias_->deepbias_embedding, score);
   }
   else{
     model_->ForwardEncoder(chunk_feats, &ctc_log_probs);

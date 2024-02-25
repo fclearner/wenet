@@ -46,10 +46,10 @@ def get_args():
                         type=int, help='cache chunks')
     parser.add_argument('--reverse_weight', default=0.5,
                         type=float, help='reverse_weight in attention_rescoing')
-    parser.add_argument('--has_context_module',
+    parser.add_argument('--has_deepbias_module',
                         default=False,
                         action='store_true',
-                        help='export context_module, default is False')
+                        help='export deep_bias_module, default is False')
     args = parser.parse_args()
     return args
 
@@ -358,74 +358,121 @@ def export_decoder(asr_model, args):
     print("\t\tCheck onnx_decoder, pass!")
 
 
-def export_context_module(asr_model, args):
-    print("Stage-4: export context_module")
-    context_module = torch.jit.script(asr_model.context_module)
-    context_module.forward = context_module.forward
-    context_module_outpath = os.path.join(args['output_dir'],
-                                          'context_module.onnx')
-
-    print("\tStage-4.1: prepare inputs for context_module")
+def export_deepbias_embed(asr_model, args):
+    print("Stage-4.1: export deepbias_module")
     # hard code context_lengths->200, it is dynamic axe.
     context_list = torch.randint(low=0, high=args['vocab_size'],
-                                 size=(259, 9), dtype=torch.int64)
+                                 size=(259, 10), dtype=torch.int64)
     context_list_lengths = torch.tensor([x.size(0) for x in context_list],
                                          dtype=torch.int32)
-    encoder_out = torch.randn((1, 200, args['output_size']), dtype=torch.float)
-    biasing_score = torch.randn((1), dtype=torch.double)
-
-    print("\tStage-4.2: torch.onnx.export")
+    deepbias_emb = asr_model.context_module.context_emb
+    deepbias_emb_outpath = os.path.join(args['output_dir'], 'deepbias_emb.onnx')
+    print("\tStage-4.1.1: prepare inputs for deepbias_emb")
+    print("\tStage-4.1.2: torch.onnx.export")
     dynamic_axes = {'context_list': {0: 'context_list_lengths',
                                      1: 'max_word_length'},
                     'context_list_lengths': {0: 'context_list_lengths'},
-                    'encoder_out': {1: 'T'},
-                    'encoder_bias_out': {1: 'T'}
+                    'context_emb': {1: 'context_list_lengths'}
                     }
-    inputs = (context_list, context_list_lengths, encoder_out, biasing_score,
-              True)
-    torch.onnx.export(context_module,
+    inputs = (context_list, context_list_lengths)
+    torch.onnx.export(deepbias_emb,
                       inputs,
-                      context_module_outpath,
+                      deepbias_emb_outpath,
                       export_params=True,
                       opset_version=13,
                       do_constant_folding=True,
-                      input_names=['context_list', 'context_list_lengths', 
-                                   'encoder_out', 'biasing_score', 'recognize'],
-                      output_names=['encoder_bias_out', 'bias_out'],
+                      input_names=['context_list', 'context_list_lengths'],
+                      output_names=['context_emb'],
                       dynamic_axes=dynamic_axes,
                       verbose=True)
-    onnx_context_module = onnx.load(context_module_outpath)
+    onnx_deepbias_emb = onnx.load(deepbias_emb_outpath)
     for (k, v) in args.items():
-        meta = onnx_context_module.metadata_props.add()
+        meta = onnx_deepbias_emb.metadata_props.add()
         meta.key, meta.value = str(k), str(v)
-    onnx.checker.check_model(onnx_context_module)
-    onnx.helper.printable_graph(onnx_context_module.graph)
-    onnx.save(onnx_context_module, context_module_outpath)
-    print_input_output_info(onnx_context_module, "onnx_context_module")
-    model_fp32 = context_module_outpath
-    model_quant = os.path.join(args['output_dir'], 'context_module.quant.onnx')
+    onnx.checker.check_model(onnx_deepbias_emb)
+    onnx.helper.printable_graph(onnx_deepbias_emb.graph)
+    onnx.save(onnx_deepbias_emb, deepbias_emb_outpath)
+    print_input_output_info(onnx_deepbias_emb, "onnx_deepbias_emb")
+    model_fp32 = deepbias_emb_outpath
+    model_quant = os.path.join(args['output_dir'], 'deepbias_emb.quant.onnx')
     quantize_dynamic(model_fp32, model_quant, weight_type=QuantType.QUInt8)
-    print('\t\tExport onnx_context_module, done! see {}'.format(context_module_outpath))
-
-    print("\tStage-4.3: check onnx_context_module and torch_context_module")
+    print('\t\tExport onnx_deepbias_emb, done! see {}'.format(deepbias_emb_outpath))
     context_list = torch.randint(low=0, high=args['vocab_size'],
                                  size=(5000, 20), dtype=torch.int64)
     context_list_lengths = torch.tensor([x.size(0) for x in context_list],
                                          dtype=torch.int32)
-    encoder_out = torch.randn((1, 16, args['output_size']), dtype=torch.float)
-    biasing_score = torch.randn((1), dtype=torch.double)
-    recognize = torch.tensor(True, dtype=torch.bool)
-    context_out, _ = context_module(context_list, context_list_lengths,
-                                    encoder_out, biasing_score, True)
+    context_emb = deepbias_emb(context_list, context_list_lengths)
     ort_session = onnxruntime.InferenceSession(
-        context_module_outpath, providers=['CPUExecutionProvider'])
-    input_names = [node.name for node in onnx_context_module.graph.input]
+        deepbias_emb_outpath, providers=['CPUExecutionProvider'])
+    input_names = [node.name for node in onnx_deepbias_emb.graph.input]
     ort_inputs = {
         'context_list': to_numpy(context_list),
-        'context_list_lengths': to_numpy(context_list_lengths),
+        'context_list_lengths': to_numpy(context_list_lengths)
+    }
+    for k in list(ort_inputs):
+        if k not in input_names:
+            ort_inputs.pop(k)
+    onnx_output = ort_session.run(None, ort_inputs)
+    np.testing.assert_allclose(to_numpy(context_emb),
+                               onnx_output[0],
+                               rtol=1e-03,
+                               atol=1e-05)
+    print("\t\tCheck deepbias_emb, pass!")
+
+
+def export_deepbias_module(asr_model, args):
+    print("Stage-4.2: export deepbias_module")
+    deepbias_module = asr_model.context_module
+    deepbias_module_outpath = os.path.join(args['output_dir'], 'deepbias.onnx')
+
+    print("\tStage-4.2.1: prepare inputs for deepbias_module")
+    # hard code context_lengths->200, it is dynamic axe.
+    context_emb = torch.randn((1, 259, args['output_size']), dtype=torch.float)
+    encoder_out = torch.randn((1, 200, args['output_size']), dtype=torch.float)
+    biasing_score = torch.randn((1), dtype=torch.float)
+
+    print("\tStage-4.2.2: torch.onnx.export")
+    dynamic_axes = {'context_emb': {1: 'context_list_lengths'},
+                    'encoder_out': {1: 'T'},
+                    'encoder_bias_out': {1: 'T'}
+                    }
+    inputs = (context_emb, encoder_out, biasing_score)
+    torch.onnx.export(deepbias_module,
+                      inputs,
+                      deepbias_module_outpath,
+                      export_params=True,
+                      opset_version=13,
+                      do_constant_folding=True,
+                      input_names=['context_emb', 'encoder_out',
+                                   'biasing_score'],
+                      output_names=['encoder_bias_out'],
+                      dynamic_axes=dynamic_axes,
+                      verbose=True)
+    onnx_deepbias_module = onnx.load(deepbias_module_outpath)
+    for (k, v) in args.items():
+        meta = onnx_deepbias_module.metadata_props.add()
+        meta.key, meta.value = str(k), str(v)
+    onnx.checker.check_model(onnx_deepbias_module)
+    onnx.helper.printable_graph(onnx_deepbias_module.graph)
+    onnx.save(onnx_deepbias_module, deepbias_module_outpath)
+    print_input_output_info(onnx_deepbias_module, "onnx_deepbias_module")
+    model_fp32 = deepbias_module_outpath
+    model_quant = os.path.join(args['output_dir'], 'deepbias.quant.onnx')
+    quantize_dynamic(model_fp32, model_quant, weight_type=QuantType.QUInt8)
+    print('\t\tExport onnx_deepbias_module, done! see {}'.format(deepbias_module_outpath))
+
+    print("\tStage-4.2.3: check onnx_deepbias_module and torch_deepbias_module")
+    context_emb = torch.randn((1, 5000, args['output_size']), dtype=torch.float)
+    encoder_out = torch.randn((1, 16, args['output_size']), dtype=torch.float)
+    biasing_score = torch.randn((1), dtype=torch.float)
+    context_out = deepbias_module(context_emb, encoder_out, biasing_score)
+    ort_session = onnxruntime.InferenceSession(
+        deepbias_module_outpath, providers=['CPUExecutionProvider'])
+    input_names = [node.name for node in onnx_deepbias_module.graph.input]
+    ort_inputs = {
+        'context_emb': to_numpy(context_emb),
         'encoder_out': to_numpy(encoder_out),
         'biasing_score': to_numpy(biasing_score),
-        'recognize': to_numpy(recognize),
     }
     for k in list(ort_inputs):
         if k not in input_names:
@@ -436,7 +483,7 @@ def export_context_module(asr_model, args):
                                onnx_output[0],
                                rtol=1e-03,
                                atol=1e-05)
-    print("\t\tCheck context_module, pass!")
+    print("\t\tCheck deepbias_module, pass!")
 
 def main():
     torch.manual_seed(777)
@@ -489,8 +536,9 @@ def main():
     export_encoder(model, arguments)
     export_ctc(model, arguments)
     export_decoder(model, arguments)
-    if args.has_context_module:
-        export_context_module(model, arguments)
+    if args.has_deepbias_module:
+        export_deepbias_embed(model, arguments)
+        export_deepbias_module(model, arguments)
 
 
 if __name__ == '__main__':

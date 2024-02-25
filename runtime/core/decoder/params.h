@@ -150,6 +150,9 @@ std::shared_ptr<DecodeResource> InitDecodeResourceFromFlags() {
     auto model = std::make_shared<OnnxAsrModel>();
     model->Read(FLAGS_onnx_dir);
     resource->model = model;
+    if (FLAGS_deep_bias) {
+      model->ReadDeepBiasModule(FLAGS_onnx_dir);
+    }
 #else
     LOG(FATAL) << "Please rebuild with cmake options '-DONNX=ON'.";
 #endif
@@ -228,15 +231,25 @@ std::shared_ptr<DecodeResource> InitDecodeResourceFromFlags() {
     while (getline(infile, context)) {
       contexts.emplace_back(Trim(context));
     }
-    ContextConfig config;
-    config.context_score = FLAGS_context_score;
-    resource->context_graph = std::make_shared<ContextGraph>(config);
-    resource->context_graph->BuildContextGraph(contexts, unit_table);
+    // ContextConfig config;
+    // config.context_score = FLAGS_context_score;
+    // resource->context_graph = std::make_shared<ContextGraph>(config);
+    // resource->context_graph->BuildContextGraph(contexts, unit_table);
     if (FLAGS_deep_bias) {
+      LOG(INFO) << "set deepbias emb" << FLAGS_deep_bias;
       DeepBiasConfig deep_bias_config;
       deep_bias_config.deep_bias_score = FLAGS_deep_bias_score;
       resource->deep_bias = std::make_shared<DeepBias>(deep_bias_config);
       resource->deep_bias->SetHotwords(contexts, unit_table);
+      auto context_data = resource->deep_bias->GetContextData();
+      auto context_data_lens = resource->deep_bias->GetContextDataLens();
+      std::vector<std::vector<float>> embedding_output;
+      resource->model->ForwardDeepBiasEmb(
+        context_data, context_data_lens,
+        &embedding_output
+      );
+      resource->deep_bias->deepbias_embedding = \
+        std::make_unique<std::vector<std::vector<float>>>(embedding_output);
     }
   }
 
