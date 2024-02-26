@@ -60,7 +60,7 @@ class ContextEmb(torch.nn.Module):
         context_emb = torch.nn.utils.rnn.pack_padded_sequence(
             context_emb, context_lengths.to('cpu').type(torch.int32),
             batch_first=True, enforce_sorted=self.enforce_sorted)
-        _, last_state = self.sen_rnn(pack_seq)
+        _, last_state = self.sen_rnn(context_emb)
         laste_h = last_state[0]
         laste_c = last_state[1]
         state = torch.cat([laste_h[-1, :, :], laste_h[-2, :, :],
