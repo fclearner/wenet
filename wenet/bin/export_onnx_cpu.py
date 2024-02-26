@@ -362,10 +362,11 @@ def export_deepbias_embed(asr_model, args):
     print("Stage-4.1: export deepbias_module")
     # hard code context_lengths->200, it is dynamic axe.
     context_list = torch.randint(low=0, high=args['vocab_size'],
-                                 size=(259, 10), dtype=torch.int64)
+                                 size=(5000, 100), dtype=torch.int64)
     context_list_lengths = torch.tensor([x.size(0) for x in context_list],
                                          dtype=torch.int32)
-    deepbias_emb = asr_model.context_module.context_emb
+    asr_model.context_module.context_emb.eval()
+    deepbias_emb = torch.jit.script(asr_model.context_module.context_emb)
     deepbias_emb_outpath = os.path.join(args['output_dir'], 'deepbias_emb.onnx')
     print("\tStage-4.1.1: prepare inputs for deepbias_emb")
     print("\tStage-4.1.2: torch.onnx.export")
@@ -398,9 +399,10 @@ def export_deepbias_embed(asr_model, args):
     quantize_dynamic(model_fp32, model_quant, weight_type=QuantType.QUInt8)
     print('\t\tExport onnx_deepbias_emb, done! see {}'.format(deepbias_emb_outpath))
     context_list = torch.randint(low=0, high=args['vocab_size'],
-                                 size=(5000, 20), dtype=torch.int64)
+                                 size=(259, 10), dtype=torch.int64)
     context_list_lengths = torch.tensor([x.size(0) for x in context_list],
                                          dtype=torch.int32)
+    deepbias_emb.enforce_sorted = False
     context_emb = deepbias_emb(context_list, context_list_lengths)
     ort_session = onnxruntime.InferenceSession(
         deepbias_emb_outpath, providers=['CPUExecutionProvider'])

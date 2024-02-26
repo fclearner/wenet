@@ -123,10 +123,11 @@ class ASRModel(torch.nn.Module):
             context_label = context_data[1]
             context_list_lengths = context_data[2]
             context_label_lengths = context_data[3]
-            context_emb = self.context_module. \
-                forward_context_emb(context_list, context_list_lengths)
-            encoder_out, bias_out = self.context_module(context_emb,
-                                                        encoder_out)
+            encoder_out, bias_out = self.context_module.forward_with_bias_out(
+                                        context_list,
+                                        context_list_lengths,
+                                        encoder_out,
+                                        1.0)
             bias_out = bias_out.transpose(0, 1).log_softmax(2)
             loss_bias = self.context_module.bias_loss(bias_out, context_label,
                                                       encoder_out_lens,

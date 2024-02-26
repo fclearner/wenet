@@ -146,11 +146,11 @@ class ContextGraph:
             context_list, context_list_lengths = self. \
                 get_context_list_tensor(self.context_list)
         context_list = context_list.to(encoder_out.device)
-        # context_emb = context_module. \
-        #     forward_context_emb(context_list, context_list_lengths)
-        encoder_out, _ = \
-            context_module.forward(context_list, context_list_lengths,
-                                   encoder_out, self.deep_biasing_score, True)
+        context_emb = context_module.context_emb(context_list,
+                                                 context_list_lengths)
+        encoder_out = context_module.forward(context_emb,
+                                             encoder_out,
+                                             self.deep_biasing_score)
         return encoder_out
 
     def two_stage_filtering(self,

@@ -34,6 +34,7 @@ class ContextEmb(torch.nn.Module):
         self.embedding_size = embedding_size
         self.word_embedding = torch.nn.Embedding(
             self.vocab_size, self.embedding_size)
+        self.enforce_sorted = False
 
         # no bidirection for we need real-context-length last-state index.
         self.sen_rnn = torch.nn.LSTM(input_size=self.embedding_size,
@@ -41,14 +42,13 @@ class ContextEmb(torch.nn.Module):
                                      num_layers=num_layers,
                                      dropout=dropout,
                                      batch_first=True,
-                                     bidirectional=False)
+                                     bidirectional=True)
         self.context_encoder = nn.Sequential(
-            nn.Linear(self.embedding_size, self.embedding_size),
+            nn.Linear(self.embedding_size * 4, self.embedding_size),
             nn.LayerNorm(self.embedding_size)
         )
 
-
-    def context_extractor(self, context_list, context_lengths):
+    def forward(self, context_list, context_lengths):
         """Using context embeddings for deep biasing.
 
         Args:
@@ -59,25 +59,19 @@ class ContextEmb(torch.nn.Module):
         context_emb = self.word_embedding(context_list)
         context_emb = torch.nn.utils.rnn.pack_padded_sequence(
             context_emb, context_lengths.to('cpu').type(torch.int32),
-            batch_first=True, enforce_sorted=False)
-        _, (state, _) = self.sen_rnn(context_emb)
+            batch_first=True, enforce_sorted=self.enforce_sorted)
+        _, last_state = self.sen_rnn(pack_seq)
+        laste_h = last_state[0]
+        laste_c = last_state[1]
+        state = torch.cat([laste_h[-1, :, :], laste_h[-2, :, :],
+                          laste_c[-1, :, :], laste_c[-2, :, :]], dim=-1)
         state = self.context_encoder(state)
         return state
 
-    def forward(self,
-                context_list: torch.Tensor,
-                context_lengths: torch.Tensor) -> torch.Tensor:
-        """Extracting context embeddings
+    def eval(self):
+        """config for onnx export
         """
-        context_list = torch.clamp(context_list, 0)
-        context_emb = self.word_embedding(context_list)
-        context_emb, (_, _) = self.sen_rnn(context_emb)
-        _index = torch.arange(context_emb.shape[0])
-        context_lengths = context_lengths - 1
-        _len_index = context_lengths.squeeze().long()
-        context_emb = context_emb[_index, _len_index].unsqueeze(0)
-        context_emb = self.context_encoder(context_emb)
-        return context_emb
+        self.enforce_sorted = True
 
 
 class ContextModule(torch.nn.Module):
@@ -140,8 +134,7 @@ class ContextModule(torch.nn.Module):
             biasing_score (float): degree of context biasing
             recognize (bool): no context decoder computation if True
         """
-        context_emb = self.context_emb.context_extractor(context_list,
-                                                         context_list_lengths)
+        context_emb = self.context_emb(context_list, context_list_lengths)
         encoder_bias_out = self.forward(context_emb, encoder_out, biasing_score)
         context_emb = context_emb.expand(encoder_out.shape[0], -1, -1)
         context_emb, _ = self.biasing_layer(encoder_out, context_emb,
