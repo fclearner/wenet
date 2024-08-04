@@ -129,8 +129,18 @@ def add_lora_args(parser):
                         type=bool,
                         help="freeze all other paramters and only optimize \
                         LoRA-related prameters.")
+    parser.add_argument(
+        '--lora_modules',
+        default="encoder.encoders.,decoder.left_decoder.decoders.,decoder.left_decoder.decoders.",
+        type=lambda s: [str(mod) for mod in s.split(",") if s != ""],
+        help='free module names',
+    )
+    parser.add_argument("--lora_attn_attr",
+                        default=['self_attn', 'src_attn'],
+                        help="lora_attn_attr.")
     parser.add_argument("--lora_list",
-                        default=['o', 'q', 'k', 'v'],
+                        default=['linear_out', 'linear_q', 'linear_k',
+                                 'linear_v'],
                         help="lora module list.")
     parser.add_argument("--lora_rank",
                         default=8,

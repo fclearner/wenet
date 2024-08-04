@@ -15,7 +15,8 @@
 import os
 import torch
 
-from wenet.finetune.lora.utils import mark_only_lora_as_trainable
+from wenet.finetune.lora.utils import (set_lora_module,
+                                       mark_only_lora_as_trainable)
 from wenet.k2.model import K2Model
 from wenet.paraformer.cif import Cif
 from wenet.paraformer.layers import SanmDecoder, SanmEncoder
@@ -38,8 +39,7 @@ from wenet.ctl_model.asr_model_ctl import CTLModel
 from wenet.whisper.whisper import Whisper
 from wenet.utils.cmvn import load_cmvn
 from wenet.utils.checkpoint import load_checkpoint, load_trained_modules
-from wenet.finetune.lora.encoder import (LoRATransformerEncoder,
-                                         LoRAConformerEncoder)
+
 
 WENET_ENCODER_CLASSES = {
     "transformer": TransformerEncoder,
@@ -51,8 +51,6 @@ WENET_ENCODER_CLASSES = {
     "dual_transformer": DualTransformerEncoder,
     "dual_conformer": DualConformerEncoder,
     'sanm_encoder': SanmEncoder,
-    "lora_transformer": LoRATransformerEncoder,
-    "lora_conformer": LoRAConformerEncoder,
 }
 
 WENET_DECODER_CLASSES = {
@@ -108,6 +106,7 @@ def init_model(args, configs):
 
     if hasattr(args, 'use_lora') and args.use_lora:
         encoder_type = "lora_" + encoder_type
+        # decoder_type = "lora_" + decoder_type
 
     encoder = WENET_ENCODER_CLASSES[encoder_type](
         input_dim,
@@ -177,6 +176,9 @@ def init_model(args, configs):
     else:
         infos = {}
     configs["init_infos"] = infos
+
+    if hasattr(args, 'use_lora') and args.use_lora:
+        set_lora_module(model)
 
     if hasattr(args, 'only_optimize_lora') and args.only_optimize_lora:
         mark_only_lora_as_trainable(model, bias='lora_only')

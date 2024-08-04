@@ -54,19 +54,10 @@ class LoRAMultiHeadedAttention(MultiHeadedAttention):
                  lora_list: Optional[List[str]] = None):
         """Construct an LoRAMultiHeadedAttention object."""
         super().__init__(
-            n_head=n_head,
-            n_feat=n_feat,
-            dropout_rate=dropout_rate,
-            query_bias=query_bias,
-            key_bias=key_bias,
-            value_bias=value_bias,
-            use_sdpa=use_sdpa,
-            n_kv_head=n_kv_head,
-            head_dim=head_dim)
-        assert n_feat % n_head == 0
-        # We assume d_v always equals d_k
-        self.d_k = n_feat // n_head
-        self.h = n_head
+            n_head=n_head, n_feat=n_feat, dropout_rate=dropout_rate,
+            query_bias=query_bias, key_bias=key_bias, value_bias=value_bias,
+            use_sdpa=use_sdpa, n_kv_head=n_kv_head, head_dim=head_dim
+        )
         self.linear_out = lora.Linear(
             n_feat, n_feat, r=lora_rank, lora_alpha=lora_alpha,
             lora_dropout=lora_dropout
@@ -86,8 +77,6 @@ class LoRAMultiHeadedAttention(MultiHeadedAttention):
                                 lora_dropout=lora_dropout,
                                 bias=bias_dict[key])
                     if value else nn.Linear(n_feat, n_feat, bias_dict[key]))
-
-        self.dropout = nn.Dropout(p=dropout_rate)
 
 
 class LoRARelPositionMultiHeadedAttention(LoRAMultiHeadedAttention,
@@ -118,15 +107,14 @@ class LoRARelPositionMultiHeadedAttention(LoRAMultiHeadedAttention,
                  lora_dropout: float = 0.0,
                  lora_list: Optional[List[str]] = None):
         """Construct an LoRARelPositionMultiHeadedAttention object."""
+        super(RelPositionMultiHeadedAttention).__init__(
+            n_head, n_feat, dropout_rate, query_bias, key_bias,
+            value_bias, use_sdpa, n_kv_head, head_dim)
 
-        super().__init__(n_head, n_feat, dropout_rate, query_bias, key_bias,
-                         value_bias, use_sdpa, n_kv_head, head_dim, lora_rank,
-                         lora_alpha, lora_dropout, lora_list)
-        # linear transformation for positional encoding
-        self.linear_pos = nn.Linear(n_feat, n_feat, bias=False)
-        # these two learnable bias are used in matrix c and matrix d
-        # as described in https://arxiv.org/abs/1901.02860 Section 3.3
-        self.pos_bias_u = nn.Parameter(torch.Tensor(self.h, self.d_k))
-        self.pos_bias_v = nn.Parameter(torch.Tensor(self.h, self.d_k))
-        torch.nn.init.xavier_uniform_(self.pos_bias_u)
-        torch.nn.init.xavier_uniform_(self.pos_bias_v)
+        super(LoRAMultiHeadedAttention).__init__(
+            n_head=n_head, n_feat=n_feat, dropout_rate=dropout_rate,
+            query_bias=query_bias, key_bias=key_bias, value_bias=value_bias,
+            use_sdpa=use_sdpa, n_kv_head=n_kv_head, head_dim=head_dim,
+            lora_rank=lora_rank, lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout, lora_list=lora_list
+        )

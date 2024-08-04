@@ -15,19 +15,7 @@
 # limitations under the License.
 # Modified from ESPnet(https://github.com/espnet/espnet)
 """Encoder definition with lora."""
-
-from typing import Optional, List
-
-import torch
-
-from wenet.transformer.convolution import ConvolutionModule
 from wenet.transformer.encoder import TransformerEncoder, ConformerEncoder
-from wenet.transformer.encoder_layer import TransformerEncoderLayer
-from wenet.transformer.encoder_layer import ConformerEncoderLayer
-from wenet.utils.class_utils import (
-    WENET_MLP_CLASSES,
-    WENET_ACTIVATION_CLASSES,
-)
 from wenet.finetune.lora.utils import WENET_LORA_ATTENTION_CLASSES
 
 
@@ -46,53 +34,37 @@ class LoRATransformerEncoder(TransformerEncoder):
             **kwargs: Keyword arguments for the LoRATransformerEncoder.
         """
         # filter parameters
-        transformer_kwargs = {
+        transformer_encoder_kwargs = {
             k: v for k, v in kwargs.items() \
             if k in TransformerEncoder.__init__.__code__.co_varnames
         }
-        super().__init__(input_size=input_size, **transformer_kwargs)
-        activation = WENET_ACTIVATION_CLASSES[kwargs.get('activation_type',
-                                                         'relu')]()
+        super().__init__(input_size=input_size, **transformer_encoder_kwargs)
+
+        selfattention_layer_type = kwargs.get('selfattention_layer_type',
+                                              'selfattn')
+        assert selfattention_layer_type in ['selfattn']
 
         # self-attention module definition
-        encoder_selfattn_layer_args = (
-            kwargs.get('attention_heads', 4),
-            kwargs.get('output_size', 256),
-            kwargs.get('attention_dropout_rate', 0.0),
-            kwargs.get('query_bias', True),
-            kwargs.get('key_bias', True),
-            kwargs.get('value_bias', True),
-            kwargs.get('use_sdpa', False),
-            kwargs.get('n_kv_head', None),
-            kwargs.get('head_dim', None),
-            kwargs.get('lora_rank', 8),
-            kwargs.get('lora_alpha', 8),
-            kwargs.get('lora_dropout',0.0),
-            kwargs.get('lora_list', None),
-        )
-        # feed-forward module definition
-        positionwise_layer_args = (
-            kwargs.get('output_size', 256),
-            kwargs.get('linear_units', 2048),
-            kwargs.get('dropout_rate', 0.1),
-            activation,
-            kwargs.get('mlp_bias', True),
-        )
-
-        mlp_class = WENET_MLP_CLASSES[kwargs.get('mlp_type',
-                                                 'position_wise_feed_forward')]
-        self.encoders = torch.nn.ModuleList([
-            TransformerEncoderLayer(
-                size=kwargs.get('output_size', 256),
-                self_attn=WENET_LORA_ATTENTION_CLASSES["selfattn"](
-                    *encoder_selfattn_layer_args),
-                feed_forward=mlp_class(*positionwise_layer_args),
-                dropout_rate=kwargs.get('dropout_rate', 0.1),
-                normalize_before=kwargs.get('normalize_before', True),
-                layer_norm_type=kwargs.get('layer_norm_type', 'layer_norm'),
-                norm_eps=kwargs.get('norm_eps', 1e-5),
-            ) for _ in range(kwargs.get('num_blocks', 6))
-        ])
+        encoder_selfattn_layer_args = {
+            'attention_heads': kwargs.get('attention_heads', 4),
+            'output_size': kwargs.get('output_size', 256),
+            'attention_dropout_rate': kwargs.get('attention_dropout_rate', 0.0),
+            'query_bias': kwargs.get('query_bias', True),
+            'key_bias': kwargs.get('key_bias', True),
+            'value_bias': kwargs.get('value_bias', True),
+            'use_sdpa': kwargs.get('use_sdpa', False),
+            'n_kv_head': kwargs.get('n_kv_head', None),
+            'head_dim': kwargs.get('head_dim', None),
+            'lora_rank': kwargs.get('lora_rank', 8),
+            'lora_alpha': kwargs.get('lora_alpha', 8),
+            'lora_dropout': kwargs.get('lora_dropout',0.0),
+            'lora_list': kwargs.get('lora_list', None),
+        }
+        for i in range(kwargs.get('num_blocks', 6)):
+            self.encoders[i].self_attn = \
+                WENET_LORA_ATTENTION_CLASSES[selfattention_layer_type](
+                    *encoder_selfattn_layer_args
+                )
 
 
 class LoRAConformerEncoder(ConformerEncoder):
@@ -110,65 +82,30 @@ class LoRAConformerEncoder(ConformerEncoder):
             **kwargs: Keyword arguments for the LoRAConformerEncoder.
         """
         # filter parameters
-        conformer_kwargs = {
+        conformer_encoder_kwargs = {
             k: v for k, v in kwargs.items() \
             if k in ConformerEncoder.__init__.__code__.co_varnames
         }
-        super().__init__(input_size=input_size, **conformer_kwargs)
-        activation = WENET_ACTIVATION_CLASSES[kwargs.get('activation_type',
-                                                         'swish')]()
+        super().__init__(input_size=input_size, **conformer_encoder_kwargs)
 
         # self-attention module definition
-        encoder_selfattn_layer_args = (
-            kwargs.get('attention_heads', 4),
-            kwargs.get('output_size', 256),
-            kwargs.get('attention_dropout_rate', 0.0),
-            kwargs.get('query_bias', True),
-            kwargs.get('key_bias', True),
-            kwargs.get('value_bias', True),
-            kwargs.get('use_sdpa', False),
-            kwargs.get('n_kv_head', None),
-            kwargs.get('head_dim', None),
-            kwargs.get('lora_rank', 8),
-            kwargs.get('lora_alpha', 8),
-            kwargs.get('lora_dropout',0.0),
-            kwargs.get('lora_list', None),
-        )
-        # feed-forward module definition
-        positionwise_layer_args = (
-            kwargs.get('output_size', 256),
-            kwargs.get('linear_units', 2048),
-            kwargs.get('dropout_rate', 0.1),
-            activation,
-            kwargs.get('mlp_bias', True),
-        )
-        # convolution module definition
-        convolution_layer_args = (
-            kwargs.get('output_size', 256),
-            kwargs.get('cnn_module_kernel', 15),
-            activation,
-            kwargs.get('cnn_module_norm', 'batch_norm'),
-            kwargs.get('causal', False),
-            kwargs.get('conv_bias', True)
-        )
-
-        mlp_class = WENET_MLP_CLASSES[kwargs.get('mlp_type',
-                                                 'position_wise_feed_forward')]
-        self.encoders = torch.nn.ModuleList([
-            ConformerEncoderLayer(
-                size=kwargs.get('output_size', 256),
-                self_attn=WENET_LORA_ATTENTION_CLASSES[
-                    kwargs.get('selfattention_layer_type', 'rel_selfattn')
-                ](*encoder_selfattn_layer_args),
-                feed_forward=mlp_class(*positionwise_layer_args),
-                feed_forward_macaron=mlp_class(*positionwise_layer_args)
-                    if kwargs.get('macaron_style', True) else None,
-                conv_module=ConvolutionModule(
-                    *convolution_layer_args
-                ) if kwargs.get('use_cnn_module', True) else None,
-                dropout_rate=kwargs.get('dropout_rate', 0.1),
-                normalize_before=kwargs.get('normalize_before', True),
-                layer_norm_type=kwargs.get('layer_norm_type', 'layer_norm'),
-                norm_eps=kwargs.get('norm_eps', 1e-5),
-            ) for _ in range(kwargs.get('num_blocks', 6))
-        ])
+        # self-attention module definition
+        encoder_selfattn_layer_args = {
+            'attention_heads': kwargs.get('attention_heads', 4),
+            'output_size': kwargs.get('output_size', 256),
+            'attention_dropout_rate': kwargs.get('attention_dropout_rate', 0.0),
+            'query_bias': kwargs.get('query_bias', True),
+            'key_bias': kwargs.get('key_bias', True),
+            'value_bias': kwargs.get('value_bias', True),
+            'use_sdpa': kwargs.get('use_sdpa', False),
+            'n_kv_head': kwargs.get('n_kv_head', None),
+            'head_dim': kwargs.get('head_dim', None),
+            'lora_rank': kwargs.get('lora_rank', 8),
+            'lora_alpha': kwargs.get('lora_alpha', 8),
+            'lora_dropout': kwargs.get('lora_dropout',0.0),
+            'lora_list': kwargs.get('lora_list', None),
+        }
+        for i in range(kwargs.get('num_blocks', 6)):
+            self.encoders[i].self_attn = WENET_LORA_ATTENTION_CLASSES[
+                kwargs.get('selfattention_layer_type', 'rel_selfattn')
+            ](*encoder_selfattn_layer_args)
