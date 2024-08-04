@@ -171,6 +171,8 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     --deepspeed_config ${deepspeed_config} \
     --deepspeed.save_states ${deepspeed_save_states} \
     --num_workers 1 \
+    --use_lora true \
+    --only_optimize_lora true \
     --prefetch ${prefetch} \
     --pin_memory
 fi
