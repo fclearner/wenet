@@ -15,7 +15,7 @@
 import os
 import torch
 
-from wenet.finetune.lora.utils import (set_lora_module,
+from wenet.finetune.lora.utils import (inject_lora_to_model,
                                        mark_only_lora_as_trainable)
 from wenet.k2.model import K2Model
 from wenet.paraformer.cif import Cif
@@ -104,10 +104,6 @@ def init_model(args, configs):
     decoder_type = configs.get('decoder', 'bitransformer')
     ctc_type = configs.get('ctc', 'ctc')
 
-    if hasattr(args, 'use_lora') and args.use_lora:
-        encoder_type = "lora_" + encoder_type
-        # decoder_type = "lora_" + decoder_type
-
     encoder = WENET_ENCODER_CLASSES[encoder_type](
         input_dim,
         global_cmvn=global_cmvn,
@@ -168,6 +164,11 @@ def init_model(args, configs):
                                        {}).get('special_tokens', None),
             **configs['model_conf'])
 
+    if hasattr(args, 'use_lora') and args.use_lora:
+        inject_lora_to_model(model, configs['lora_conf'])
+        if hasattr(args, 'lora_ckpt_path') and args.lora_ckpt_path:
+            load_checkpoint(model, args.lora_ckpt_path)
+
     # If specify checkpoint, load some info from checkpoint
     if hasattr(args, 'checkpoint') and args.checkpoint is not None:
         infos = load_checkpoint(model, args.checkpoint)
@@ -176,9 +177,6 @@ def init_model(args, configs):
     else:
         infos = {}
     configs["init_infos"] = infos
-
-    if hasattr(args, 'use_lora') and args.use_lora:
-        set_lora_module(model)
 
     if hasattr(args, 'only_optimize_lora') and args.only_optimize_lora:
         mark_only_lora_as_trainable(model, bias='lora_only')

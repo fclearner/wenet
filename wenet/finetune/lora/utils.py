@@ -11,7 +11,17 @@ import torch.nn as nn
 
 from typing import Dict
 
-from wenet.finetune.lora.layers import lora
+import wenet.finetune.lora.layers as lora
+
+
+def get_nested_attr(module, attr_path):
+    attrs = attr_path.split('.')
+    for attr in attrs:
+        if hasattr(module, attr):
+            module = getattr(module, attr)
+        else:
+            return None
+    return module
 
 
 def inject_lora(module, lora_config):
@@ -22,15 +32,26 @@ def inject_lora(module, lora_config):
         if hasattr(module, lora_attr):
             submodule = getattr(module, lora_attr)
             n_feat = submodule.in_features
-            submodule = lora.Linear(n_feat, n_feat, r=lora_rank,
-                                    lora_alpha=lora_alpha,
-                                    lora_dropout=lora_dropout)
+            lora_linear  = lora.Linear(n_feat, n_feat, r=lora_rank,
+                                     lora_alpha=lora_alpha,
+                                     lora_dropout=lora_dropout)
+            setattr(module, lora_attr, lora_linear)
 
 
 def inject_lora_to_model(model, lora_config):
+    lora_modules = []
     for module in lora_config["lora_modules"]:
-        if hasattr(model, module):
-            inject_lora(getattr(model, module), lora_config)
+        submodule = get_nested_attr(model, module)
+        for layer in submodule:
+            lora_modules.append(layer)
+
+    for i in range(len(lora_modules)):
+        for attn_attr in lora_config["lora_attn_attr"]:
+            if hasattr(lora_modules[i], attn_attr):
+                lora_modules[i] = getattr(lora_modules[i], attn_attr)
+
+    for lora_module in lora_modules:
+        inject_lora(lora_module, lora_config)
 
 
 def mark_only_lora_as_trainable(model: nn.Module, bias: str = 'none') -> None:
@@ -46,7 +67,7 @@ def mark_only_lora_as_trainable(model: nn.Module, bias: str = 'none') -> None:
                 p.requires_grad = True
     elif bias == 'lora_only':
         for m in model.modules():
-            if isinstance(m, lora) and \
+            if isinstance(m, lora.LoRALayer) and \
                hasattr(m, 'bias') and \
                m.bias is not None:
                 m.bias.requires_grad = True
