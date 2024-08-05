@@ -91,11 +91,11 @@ if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
   for x in ${train_set} ${dev_set}; do
     if [ $data_type == "shard" ]; then
       tools/make_shard_list.py --num_utts_per_shard $num_utts_per_shard \
-        --num_threads 16 data/$x/wav.scp data/$x/text --resample 16000 \
-        $shards_dir data/$x/data.list
+        --num_threads 16 $data_dir/$x/wav.scp $data_dir/$x/text --resample 16000 \
+        $shards_dir $data_dir/$x/data.list
     else
-      tools/make_raw_list.py data/$x/wav.scp data/$x/text \
-        data/$x/data.list
+      tools/make_raw_list.py $data_dir/$x/wav.scp $data_dir/$x/text \
+        $data_dir/$x/data.list
     fi
   done
 fi
