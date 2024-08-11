@@ -173,6 +173,8 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     --num_workers 1 \
     --use_lora true \
     --only_optimize_lora true \
+    --lora_reinit true \
+    --lora_init_yaml /root/autodl-tmp/wenet_origin/wenet/examples/aishell/s0/wenet/finetune/lora/config.yaml \
     --prefetch ${prefetch} \
     --pin_memory
 fi
