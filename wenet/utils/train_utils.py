@@ -39,7 +39,6 @@ from deepspeed.runtime.zero.stage3 import (
     estimate_zero3_model_states_mem_needs_all_live)
 from deepspeed.utils.zero_to_fp32 import (
     convert_zero_checkpoint_to_fp32_state_dict)
-from wenet.dataset.dataset import Dataset
 from wenet.utils.checkpoint import save_checkpoint
 from wenet.utils.common import (StepTimer, get_nested_attribute, lrs_to_str,
                                 tensor_to_scalar)
@@ -49,6 +48,7 @@ from wenet.utils.fsdp_utils import (check_gradient_checkpoint, fsdp_save_model,
 from wenet.utils.scheduler import WarmupLR, NoamHoldAnnealing
 from wenet.utils.ctc_utils import get_blank_id
 from wenet.utils.common import TORCH_NPU_AVAILABLE
+from wenet.utils.init_dataset import init_dataset
 
 
 def add_model_args(parser):
@@ -369,24 +369,23 @@ def init_dataset_and_dataloader(args, configs, tokenizer, seed=777):
     # if save_interval in configs, steps mode else epoch mode
     if "save_interval" in configs:
         configs['dataset_conf']['cycle'] = configs.get('max_epoch', 100)
-    train_conf = configs['dataset_conf']
-    cv_conf = copy.deepcopy(train_conf)
-    cv_conf['cycle'] = 1
-    cv_conf['speed_perturb'] = False
-    cv_conf['spec_aug'] = False
-    cv_conf['spec_sub'] = False
-    cv_conf['spec_trim'] = False
-    cv_conf['shuffle'] = False
-    cv_conf['list_shuffle'] = False
-
+    conf = configs['dataset_conf']
+    dataset_type = configs.get('dataset', 'asr')
     configs['vocab_size'] = tokenizer.vocab_size()
-    train_dataset = Dataset(args.data_type, args.train_data, tokenizer,
-                            train_conf, True)
-    cv_dataset = Dataset(args.data_type,
-                         args.cv_data,
-                         tokenizer,
-                         cv_conf,
-                         partition=False)
+    train_dataset = init_dataset(dataset_type,
+                                 args.data_type,
+                                 args.train_data,
+                                 tokenizer,
+                                 conf,
+                                 True,
+                                 split='train')
+    cv_dataset = init_dataset(dataset_type,
+                              args.data_type,
+                              args.cv_data,
+                              tokenizer,
+                              conf,
+                              partition=False,
+                              split='cv')
 
     # NOTE(xcsong): Why we prefer persistent_workers=True ?
     #   https://discuss.pytorch.org/t/what-are-the-dis-advantages-of-persistent-workers/102110
@@ -885,19 +884,35 @@ def freeze_modules(model, args):
                 logging.debug("{} module is freezed".format(name))
 
 
-def reinit_lora(model, dataset, args):
-    import tqdm
+def reinit_lora(model, args, dataset_configs, tokenizer, seed=777):
+    from tqdm import tqdm
     from wenet.finetune.lora.utils import estimate_gradient, reinit_lora_modules
     from wenet.finetune.lora.layers import LoRALayer
+    from types import SimpleNamespace
 
     logging.info("reinit lora modules.")
     with open(args.lora_init_yaml, 'r') as file:
         config = yaml.safe_load(file)
 
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    dataset_conf = copy.deepcopy(dataset_configs['dataset_conf'])
+    dataset_conf['batch_conf']['batch_size'] = config['init_batch_size']
+    dataset_type = dataset_configs.get('dataset', 'asr')
+    dataset = init_dataset(dataset_type, args.data_type, args.train_data,
+                           tokenizer, dataset_conf, True)
+    dataloader = DataLoader(dataset,
+                            batch_size=None,
+                            pin_memory=args.pin_memory,
+                            num_workers=args.num_workers,
+                            persistent_workers=True,
+                            generator=generator,
+                            prefetch_factor=args.prefetch)
     additional_kwargs = {}
-    named_grads = estimate_gradient(model, dataset, config["init_batchsize"],
-                                    config["init_iters"])
-    additional_kwargs["named_grads"] = named_grads
+    if config["init_config"]["mode"] == "gradient":
+        named_grads = estimate_gradient(model, dataloader, config['init_iters'])
+        additional_kwargs["named_grads"] = named_grads
+    config = SimpleNamespace(**config["init_config"])
     for name, module in tqdm(
         model.named_modules(),
         desc="Reinitializing Lora",
